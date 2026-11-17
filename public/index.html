@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>无界画布 · 全世界同一张纸</title>
+<meta name="description" content="一张无限大的画布，全世界的人在上面一起画画。">
+<style>
+  :root {
+    --paper: #fbfaf7; --ink: #1b1b1f; --muted: #6f6e77; --line: #e6e3dc;
+    --card: rgba(255,255,255,.88); --shadow: 0 6px 24px rgba(30,25,15,.10), 0 1px 2px rgba(30,25,15,.08);
+    --accent: #0090ff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--paper); color: var(--ink);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+    overscroll-behavior: none; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
+  canvas.hand { cursor: grab; } canvas.flag { cursor: pointer; } canvas.grabbing { cursor: grabbing; }
+
+  .card { background: var(--card); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  #brand { position: fixed; left: max(12px, env(safe-area-inset-left)); top: max(12px, env(safe-area-inset-top)); padding: 10px 14px; }
+  #brand h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: .04em; }
+  #brand .sub { margin-top: 2px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  #me { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  #me i { width: 8px; height: 8px; border-radius: 50%; background: #bbb; display: inline-block; }
+  #me b { color: var(--ink); font-weight: 600; text-decoration: underline dotted; text-underline-offset: 3px; }
+
+  #nav { position: fixed; right: max(12px, env(safe-area-inset-right)); top: max(12px, env(safe-area-inset-top));
+    display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 60vw; }
+  #nav button { padding: 9px 13px; font-size: 13px; font-weight: 550; white-space: nowrap; }
+  #nav button:hover { background: #fff; }
+  #online .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #30a46c; margin-right: 6px;
+    box-shadow: 0 0 0 3px rgba(48,164,108,.18); }
+  #online.off .dot { background: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,.18); }
+
+  #zoom { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; overflow: hidden; }
+  #zoom button { width: 38px; height: 36px; font-size: 18px; }
+  #zoom button + button { border-top: 1px solid var(--line); }
+  #zoom button:hover { background: #fff; }
+
+  #bar { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+    display: flex; align-items: center; gap: 4px; padding: 6px 8px; max-width: calc(100vw - 24px); }
+  #bar .sep { width: 1px; height: 24px; background: var(--line); margin: 0 4px; flex: none; }
+  .tool { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex: none; }
+  .tool:hover { background: rgba(0,0,0,.05); }
+  .tool[aria-pressed="true"] { background: var(--ink); color: #fff; }
+  .tool svg { width: 20px; height: 20px; }
+  .sw { width: 26px; height: 26px; border-radius: 50%; flex: none; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); transition: transform .12s; }
+  .sw[aria-pressed="true"] { transform: scale(1.18); box-shadow: 0 0 0 2px var(--ink); }
+  .sz { width: 30px; height: 38px; display: grid; place-items: center; flex: none; border-radius: 8px; }
+  .sz i { display: block; border-radius: 50%; background: var(--ink); opacity: .35; }
+  .sz[aria-pressed="true"] i { opacity: 1; }
+  #colors { display: flex; gap: 6px; align-items: center; overflow-x: auto; scrollbar-width: none; padding: 4px 2px; }
+  #colors::-webkit-scrollbar { display: none; }
+
+  #mod { position: fixed; right: max(12px, env(safe-area-inset-right)); top: 64px; width: min(360px, calc(100vw - 24px));
+    max-height: calc(100vh - 160px); display: flex; flex-direction: column; overflow: hidden; }
+  #mod[hidden], #btnMod[hidden] { display: none; }
+  #mod header { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  #mod header button { width: 28px; height: 28px; border-radius: 8px; color: var(--muted); }
+  #mod header button:hover { background: rgba(0,0,0,.05); }
+  #modList { overflow-y: auto; }
+  #modList .row { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+  #modList .row:last-child { border-bottom: 0; }
+  #modList .info { flex: 1; min-width: 0; }
+  #modList .info b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  #modList .info div { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  #modList button { padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); background: #fff; flex: none; }
+  #modList button.go { background: var(--ink); color: #fff; border-color: var(--ink); }
+  #modList .empty { padding: 22px 14px; color: var(--muted); text-align: center; }
+  #toast { position: fixed; left: 50%; bottom: 86px; transform: translate(-50%, 8px); padding: 9px 14px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s; white-space: nowrap; max-width: calc(100vw - 24px);
+    overflow: hidden; text-overflow: ellipsis; }
+  #toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+  @media (max-width: 560px) {
+    #nav button span.l { display: none; }
+    #brand h1 { font-size: 14px; }
+    #zoom { display: none; }
+    .sw { width: 24px; height: 24px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="brand" class="card">
+  <h1>无界画布</h1>
+  <div class="sub" id="pos">x 0 · y 0 · 100%</div>
+  <button id="me" title="点击改名"><i></i>你是 <b id="myname"></b></button>
+</div>
+
+<div id="nav">
+  <button id="online" class="card off" title="飞到一位在线的人身边"><span class="dot"></span><span id="count">连接中…</span></button>
+  <button id="btnEmpty" class="card" title="找一块没人画过的地方">找空地</button>
+  <button id="btnShare" class="card" title="复制当前位置的链接">分享<span class="l">位置</span></button>
+  <button id="btnMod" class="card" hidden title="查看被处罚的人，恢复误伤">管理</button>
+</div>
+
+<div id="zoom" class="card">
+  <button id="zin" aria-label="放大">+</button>
+  <button id="zout" aria-label="缩小">−</button>
+</div>
+
+<div id="bar" class="card">
+  <button class="tool" id="tPen" aria-pressed="true" title="画笔 (B)" aria-label="画笔">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.6 7.6"/><circle cx="11" cy="11" r="2"/></svg>
+  </button>
+  <button class="tool" id="tHand" aria-pressed="false" title="移动 (H 或按住空格)" aria-label="移动">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.3l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"/></svg>
+  </button>
+  <button class="tool" id="tFlag" aria-pressed="false" title="举报：点一下乱涂的笔画" aria-label="举报">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/></svg>
+  </button>
+  <div class="sep"></div>
+  <div id="colors"></div>
+  <div class="sep"></div>
+  <div id="sizes" style="display:flex"></div>
+  <div class="sep"></div>
+  <button class="tool" id="tUndo" title="撤销我的上一笔 (⌘/Ctrl+Z)" aria-label="撤销">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/></svg>
+  </button>
+</div>
+
+<div id="mod" class="card" hidden>
+  <header><b>被处罚的人</b><button id="modClose" aria-label="关闭">✕</button></header>
+  <div id="modList"></div>
+</div>
+
+<div id="toast" class="card"></div>
+
+<script>
+(() => {
+  'use strict';
+  const CHUNK = 2048, MINZ = 0.1, MAXZ = 8, DRAWZ = 0.25, PAPER = '#fbfaf7';
+  const COLORS = ['#1b1b1f', '#e5484d', '#f76b15', '#ffc53d', '#30a46c', '#0090ff', '#8e4ec6', '#e93d82'];
+  const SIZES = [3, 7, 16]; // 屏幕像素
+
+  const $ = (id) => document.getElementById(id);
+  const cv = $('c'), ctx = cv.getContext('2d');
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  };
+  const rid = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => (b % 36).toString(36)).join('');
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  // ---------- 身份 ----------
+  let uid = store.get('wc.uid');
+  if (!uid) { uid = rid(20); store.set('wc.uid', uid); }
+  let myName = store.get('wc.name') || '旅人' + Math.floor(1000 + Math.random() * 9000);
+  store.set('wc.name', myName);
+  const me = { id: null, h: '#bbb' };
+  $('myname').textContent = myName;
+
+  // ---------- 视图 ----------
+  let W = 0, H = 0, dpr = 1;
+  const view = { x: 0, y: 0, z: 1 }; // x,y 为屏幕中心的世界坐标
+  const s2w = (sx, sy) => [(sx - W / 2) / view.z + view.x, (sy - H / 2) / view.z + view.y];
+  const w2s = (x, y) => [(x - view.x) * view.z + W / 2, (y - view.y) * view.z + H / 2];
+
+  function readHash() {
+    const m = location.hash.slice(1).split(',').map(Number);
+    if (m.length >= 2 && m.every(Number.isFinite)) {
+      view.x = clamp(m[0], -1e8, 1e8); view.y = clamp(m[1], -1e8, 1e8);
+      if (m[2]) view.z = clamp(m[2], MINZ, MAXZ);
+      return true;
+    }
+    return false;
+  }
+  // 没带位置链接进来的人，连上后由服务器分配一块空地；在那之前先停在随机处，不暴露任何“原点”
+  let needEntry = !readHash();
+  if (needEntry) { view.x = (Math.random() - 0.5) * 2e5; view.y = (Math.random() - 0.5) * 2e5; }
+  addEventListener('hashchange', () => { if (readHash()) changed(true); });
+
+  let dirty = true, hashTimer = 0, syncTimer = 0;
+  function changed(skipHash) {
+    dirty = true;
+    $('pos').textContent = `x ${Math.round(view.x)} · y ${Math.round(view.y)} · ${Math.round(view.z * 100)}%`;
+    if (!syncTimer) syncTimer = setTimeout(() => { syncTimer = 0; syncView(); }, 120);
+    if (!skipHash) {
+      clearTimeout(hashTimer);
+      hashTimer = setTimeout(() => {
+        history.replaceState(null, '', `#${Math.round(view.x)},${Math.round(view.y)},${view.z.toFixed(2)}`);
+      }, 400);
+    }
+  }
+  function zoomAt(sx, sy, f) {
+    const [wx, wy] = s2w(sx, sy);
+    view.z = clamp(view.z * f, MINZ, MAXZ);
+    view.x = wx - (sx - W / 2) / view.z;
+    view.y = wy - (sy - H / 2) / view.z;
+    changed();
+  }
+  let fly = null;
+  function flyTo(x, y, z) {
+    fly = { x0: view.x, y0: view.y, z0: view.z, x, y, z: z ?? view.z, t0: performance.now(), d: 700 };
+    dirty = true;
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    W = innerWidth; H = innerHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    changed(true);
+  }
+  addEventListener('resize', resize);
+
+  // ---------- 笔画存储（按区块加载/卸载） ----------
+  const strokes = new Map();   // id -> {id,c,w,p,b,ks}
+  const chunkIdx = new Map();  // "cx,cy" -> Set<id>
+  const loaded = new Set();    // 已向服务器请求过的区块
+  const pending = new Map();   // 我画完、等服务器确认的笔画 sid -> stroke
+  const live = new Map();      // 别人正在画的 "from:sid" -> {c,w,p}
+  const peers = new Map();     // id -> {x,y,tx,ty,n,h,seen}
+  const myStack = [];          // 我本次会话画的笔画 id，用于撤销
+
+  function bboxOf(p, pad) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < p.length; i += 2) {
+      if (p[i] < x0) x0 = p[i]; if (p[i] > x1) x1 = p[i];
+      if (p[i + 1] < y0) y0 = p[i + 1]; if (p[i + 1] > y1) y1 = p[i + 1];
+    }
+    return [x0 - pad, y0 - pad, x1 + pad, y1 + pad];
+  }
+  function addStroke(s) {
+    if (strokes.has(s.id)) return;
+    s.b = bboxOf(s.p, s.w / 2);
+    s.ks = [];
+    const cx1 = Math.floor(s.b[2] / CHUNK), cy1 = Math.floor(s.b[3] / CHUNK);
+    for (let cx = Math.floor(s.b[0] / CHUNK); cx <= cx1; cx++)
+      for (let cy = Math.floor(s.b[1] / CHUNK); cy <= cy1; cy++) {
+        const k = cx + ',' + cy;
+        s.ks.push(k);
+        let set = chunkIdx.get(k);
+        if (!set) chunkIdx.set(k, (set = new Set()));
+        set.add(s.id);
+      }
+    strokes.set(s.id, s);
+    dirty = true;
+  }
+  function removeStroke(id) {
+    const s = strokes.get(id);
+    if (!s) return;
+    for (const k of s.ks) {
+      const set = chunkIdx.get(k);
+      if (set) { set.delete(id); if (!set.size) chunkIdx.delete(k); }
+    }
+    strokes.delete(id);
+    dirty = true;
+  }
+  function unloadChunk(k) {
+    loaded.delete(k);
+    const set = chunkIdx.get(k);
+    if (!set) return;
+    for (const id of [...set]) {
+      const s = strokes.get(id);
+      if (s && !s.ks.some((k2) => loaded.has(k2))) removeStroke(id);
+    }
+  }
+
+  // 告诉服务器我的视野，并补齐视野内还没加载的区块
+  function syncView() {
+    if (!ws || ws.readyState !== 1) return;
+    const hw = W / 2 / view.z, hh = H / 2 / view.z;
+    const cx0 = Math.floor((view.x - hw) / CHUNK) - 1, cy0 = Math.floor((view.y - hh) / CHUNK) - 1;
+    const cx1 = Math.floor((view.x + hw) / CHUNK) + 1, cy1 = Math.floor((view.y + hh) / CHUNK) + 1;
+    send({ t: 'view', r: [cx0 * CHUNK, cy0 * CHUNK, (cx1 + 1) * CHUNK, (cy1 + 1) * CHUNK] });
+    for (const k of [...loaded]) {
+      const [cx, cy] = k.split(',').map(Number);
+      if (cx < cx0 || cx > cx1 || cy < cy0 || cy > cy1) unloadChunk(k);
+    }
+    let batch = [];
+    for (let cx = cx0; cx <= cx1; cx++)
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const k = cx + ',' + cy;
+        if (loaded.has(k)) continue;
+        loaded.add(k);
+        batch.push([cx, cy]);
+        if (batch.length === 32) { send({ t: 'load', k: batch }); batch = []; }
+      }
+    if (batch.length) send({ t: 'load', k: batch });
+  }
+
+  // ---------- 网络 ----------
+  let ws = null, retry = 1000;
+  function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+  function connect() {
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+    ws.onopen = () => {
+      retry = 1000;
+      $('online').classList.remove('off');
+      // 重连后整个重载，避免错过离线期间的改动
+      strokes.clear(); chunkIdx.clear(); loaded.clear(); live.clear(); peers.clear();
+      send({ t: 'hello', uid, name: myName });
+      syncView();
+      for (const [sid, s] of pending) send({ t: 'end', sid, c: s.c, w: s.w, p: s.p });
+      dirty = true;
+    };
+    ws.onclose = () => {
+      $('online').classList.add('off');
+      $('count').textContent = '重连中…';
+      setTimeout(connect, retry);
+      retry = Math.min(retry * 2, 8000);
+    };
+    ws.onmessage = (e) => {
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      switch (m.t) {
+        case 'welcome': if (adminKey) send({ t: 'admin', key: adminKey }); me.id = m.id; me.h = m.h; $('me').querySelector('i').style.background = m.h; setCount(m.n);
+          if (needEntry) send({ t: 'empty', entry: true });
+          break;
+        case 'n': setCount(m.n); break;
+        case 'strokes': for (const s of m.s) addStroke(s); break;
+        case 'stroke':
+          if (m.from === me.id) { pending.delete(m.sid); myStack.push(m.s.id); if (myStack.length > 200) myStack.shift(); }
+          else live.delete(m.from + ':' + m.sid);
+          addStroke(m.s); dirty = true; break;
+        case 'rej':
+          pending.delete(m.sid); dirty = true;
+          if (m.why === 'ink') toast('画得太快太多了，歇几秒再继续');
+          else if (m.why === 'ban') toast('你被多人举报，24 小时内暂时不能画');
+          break;
+        case 'banned': cancelStroke(); toast('你被多人举报，近期的画已被隐藏，24 小时内暂时不能画', 6000); break;
+        case 'reload': strokes.clear(); chunkIdx.clear(); loaded.clear(); live.clear(); dirty = true; syncView(); break;
+        case 'reported':
+          if (!m.ok) toast(m.why === 'self' ? '不能举报自己的画' : '举报太频繁了，过会儿再试');
+          else if (m.done) toast('举报生效：这位作者近期的画已被隐藏');
+          else toast(`已举报（${m.n}/${m.need}），再有人举报就会隐藏这位作者近期的画`, 4500);
+          break;
+        case 'unbanned': toast('你的禁画已被管理员解除，画也恢复了', 5000); break;
+        case 'modlist': renderMod(m); break;
+        case 'ghost': ghosts = m.s; dirty = true; if (!m.s.length) toast('这个人没有被隐藏的笔画'); break;
+        case 'admin': isAdmin = m.ok; $('btnMod').hidden = !m.ok; toast(m.ok ? '管理员模式已开启：用举报工具点笔画即可处理' : '管理员口令不对'); break;
+        case 'del': { removeStroke(m.id); const i = myStack.indexOf(m.id); if (i >= 0) myStack.splice(i, 1); break; }
+        case 'draw': {
+          const k = m.from + ':' + m.sid;
+          let l = live.get(k);
+          if (!l) live.set(k, (l = { c: m.c, w: m.w, p: [] }));
+          for (const v of m.p) l.p.push(v);
+          dirty = true; break;
+        }
+        case 'cancel': live.delete(m.from + ':' + m.sid); dirty = true; break;
+        case 'cur': {
+          let p = peers.get(m.id);
+          if (!p) peers.set(m.id, (p = { x: m.x, y: m.y }));
+          p.tx = m.x; p.ty = m.y; p.n = m.n; p.h = m.h; p.seen = performance.now();
+          dirty = true; break;
+        }
+        case 'leave':
+          peers.delete(m.id);
+          for (const k of [...live.keys()]) if (k.startsWith(m.id + ':')) live.delete(k);
+          dirty = true; break;
+        case 'who': {
+          if (!m.list.length) { toast('现在只有你一个人，把链接分享给朋友吧'); break; }
+          whoIdx = (whoIdx + 1) % m.list.length;
+          const p = m.list[whoIdx];
+          flyTo(p.x, p.y, Math.max(view.z, 0.6));
+          toast(`飞到 ${p.n} 身边`);
+          break;
+        }
+        case 'empty':
+          if (m.entry) {
+            if (!needEntry) break;
+            needEntry = false; fly = null;
+            view.x = m.x; view.y = m.y; view.z = 1; changed();
+            toast('这块空白是你的，随便画吧');
+          } else { flyTo(m.x, m.y, 1); toast('这里还没人画过，是你的了'); }
+          break;
+      }
+    };
+  }
+  let whoIdx = -1, isAdmin = false, adminKey = null;
+  if (new URLSearchParams(location.search).has('admin')) {
+    try { adminKey = sessionStorage.getItem('wc.admin'); } catch {}
+    if (!adminKey) { adminKey = prompt('管理员口令') || null; try { if (adminKey) sessionStorage.setItem('wc.admin', adminKey); } catch {} }
+  }
+
+  // ---------- 管理面板：查看处罚、预览隐藏的画、恢复误伤 ----------
+  let ghosts = [];
+  function renderMod(m) {
+    const box = $('modList');
+    box.textContent = '';
+    if (!m.list.length) {
+      const e = document.createElement('div'); e.className = 'empty'; e.textContent = '目前没有人被处罚'; box.appendChild(e); return;
+    }
+    for (const it of m.list) {
+      const row = document.createElement('div'); row.className = 'row';
+      const info = document.createElement('div'); info.className = 'info';
+      const name = document.createElement('b'); name.textContent = '作者 #' + it.who.replace(/^u:/, '').slice(0, 6);
+      const sub = document.createElement('div');
+      const left = it.until - m.now;
+      sub.textContent = `隐藏 ${it.n} 笔 · ` + (left > 0 ? `禁画还剩 ${left > 3600000 ? Math.ceil(left / 3600000) + ' 小时' : Math.ceil(left / 60000) + ' 分钟'}` : '禁画已到期');
+      info.append(name, sub);
+      const see = document.createElement('button'); see.textContent = '查看';
+      see.disabled = !it.n;
+      see.onclick = () => {
+        send({ t: 'peek', who: it.who });
+        flyTo(it.x, it.y, clamp(Math.min(W, H) * 0.7 / Math.max(it.span, 200), 0.1, 2));
+        toast('半透明显示的是被隐藏的画，只有你看得到', 4000);
+      };
+      const ok = document.createElement('button'); ok.className = 'go'; ok.textContent = '恢复';
+      ok.onclick = () => {
+        if (!confirm('恢复这个人被隐藏的全部笔画，并解除禁画？')) return;
+        ghosts = []; send({ t: 'restore', who: it.who });
+      };
+      row.append(info, see, ok);
+      box.appendChild(row);
+    }
+  }
+  $('btnMod').onclick = () => { const p = $('mod'); p.hidden = !p.hidden; if (!p.hidden) send({ t: 'modlist' }); else { ghosts = []; dirty = true; } };
+  $('modClose').onclick = () => { $('mod').hidden = true; ghosts = []; dirty = true; };
+
+  // 找到屏幕坐标下最上层的笔画（举报用）
+  function hitStroke(sx, sy) {
+    const [x, y] = s2w(sx, sy), tol = 8 / view.z;
+    let best = null;
+    for (const s of strokes.values()) {
+      const r = s.w / 2 + tol;
+      if (x < s.b[0] - tol || x > s.b[2] + tol || y < s.b[1] - tol || y > s.b[3] + tol) continue;
+      if (best && s.id < best.id) continue;
+      const p = s.p;
+      for (let i = 0; i < p.length - 2; i += 2) {
+        const ax = p[i], ay = p[i + 1], dx = p[i + 2] - ax, dy = p[i + 3] - ay;
+        const L = dx * dx + dy * dy;
+        const t = L ? clamp(((x - ax) * dx + (y - ay) * dy) / L, 0, 1) : 0;
+        if (Math.hypot(x - ax - t * dx, y - ay - t * dy) <= r) { best = s; break; }
+      }
+    }
+    return best;
+  }
+  function flagAt(sx, sy) {
+    const s = hitStroke(sx, sy);
+    if (!s) { toast('点在一笔画上才能举报'); return; }
+    if (isAdmin) {
+      if (confirm('【管理员】隐藏这位作者近 24 小时的全部笔画，并禁画 24 小时？\n（取消 = 只处理这一笔）')) send({ t: 'mod', id: s.id, all: true });
+      else if (confirm('【管理员】只删除这一笔？')) send({ t: 'mod', id: s.id });
+      return;
+    }
+    if (confirm('举报这一笔是恶意乱涂？\n多人举报后，这位作者近期的画会被隐藏。')) send({ t: 'report', id: s.id });
+  }
+  function setCount(n) { $('count').textContent = n + ' 人在线'; }
+
+  // ---------- 绘制 ----------
+  function path(p, w, c) {
+    ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = w;
+    const n = p.length;
+    if (n < 4 || (n === 4 && p[0] === p[2] && p[1] === p[3])) {
+      ctx.beginPath(); ctx.arc(p[0], p[1], w / 2, 0, 6.2832); ctx.fill(); return;
+    }
+    ctx.beginPath(); ctx.moveTo(p[0], p[1]);
+    for (let i = 2; i < n - 2; i += 2) {
+      ctx.quadraticCurveTo(p[i], p[i + 1], (p[i] + p[i + 2]) / 2, (p[i + 1] + p[i + 3]) / 2);
+    }
+    ctx.lineTo(p[n - 2], p[n - 1]);
+    ctx.stroke();
+  }
+
+  function draw(now) {
+    if (fly) {
+      const t = Math.min(1, (now - fly.t0) / fly.d), e = t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      view.x = fly.x0 + (fly.x - fly.x0) * e; view.y = fly.y0 + (fly.y - fly.y0) * e;
+      view.z = Math.exp(Math.log(fly.z0) + (Math.log(fly.z) - Math.log(fly.z0)) * e);
+      if (t >= 1) fly = null;
+      changed();
+    }
+    // 光标平滑
+    for (const [id, p] of peers) {
+      if (now - p.seen > 15000) { peers.delete(id); dirty = true; continue; }
+      const dx = p.tx - p.x, dy = p.ty - p.y;
+      if (Math.abs(dx) + Math.abs(dy) > 0.05 / view.z) { p.x += dx * 0.35; p.y += dy * 0.35; dirty = true; }
+    }
+    if (!dirty) return;
+    dirty = false;
+
+    const z = view.z, hw = W / 2 / z, hh = H / 2 / z;
+    const L = view.x - hw, T = view.y - hh, R = view.x + hw, B = view.y + hh;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
+
+    // 点阵网格
+    let step = 64; while (step * z < 24) step *= 4; while (step * z > 96) step /= 4;
+    ctx.fillStyle = '#dcd8cf';
+    for (let x = Math.floor(L / step) * step; x <= R; x += step) {
+      const sx = Math.round((x - view.x) * z + W / 2);
+      for (let y = Math.floor(T / step) * step; y <= B; y += step) {
+        ctx.fillRect(sx - 1, Math.round((y - view.y) * z + H / 2) - 1, 2, 2);
+      }
+    }
+
+    ctx.setTransform(dpr * z, 0, 0, dpr * z, dpr * (W / 2 - view.x * z), dpr * (H / 2 - view.y * z));
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const vis = [];
+    for (const s of strokes.values()) {
+      if (s.b[0] > R || s.b[2] < L || s.b[1] > B || s.b[3] < T) continue;
+      vis.push(s);
+    }
+    vis.sort((a, b) => a.id - b.id);
+    for (const s of vis) path(s.p, s.w, s.c);
+    if (ghosts.length) { ctx.globalAlpha = 0.35; for (const s of ghosts) path(s.p, s.w, s.c); ctx.globalAlpha = 1; }
+    for (const s of live.values()) path(s.p, s.w, s.c);
+    for (const s of pending.values()) path(s.p, s.w, s.c);
+    if (cur) path(cur.p, cur.w, cur.c);
+
+    // 别人的光标
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.font = '600 12px -apple-system, "PingFang SC", sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    for (const p of peers.values()) {
+      const [sx, sy] = w2s(p.x, p.y);
+      if (sx < -80 || sx > W + 80 || sy < -40 || sy > H + 40) continue;
+      ctx.fillStyle = p.h; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + 4, sy + 15); ctx.lineTo(sx + 8, sy + 9); ctx.lineTo(sx + 15, sy + 8); ctx.closePath();
+      ctx.stroke(); ctx.fill();
+      const tw = ctx.measureText(p.n).width;
+      ctx.beginPath(); ctx.roundRect(sx + 12, sy + 16, tw + 14, 20, 10); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.fillText(p.n, sx + 19, sy + 26.5);
+    }
+  }
+  function loop(now) { draw(now); requestAnimationFrame(loop); }
+
+  // ---------- 输入 ----------
+  let tool = 'pen', color = COLORS[0], size = SIZES[1], space = false;
+  let cur = null;      // 正在画的一笔
+  let gesture = null;  // {type:'draw'|'pan'|'pinch'|'wait', ...}
+  const pts = new Map();
+
+  function startStroke(e) {
+    const [x, y] = s2w(e.clientX, e.clientY);
+    cur = { sid: rid(8), c: color, w: r2(Math.max(0.2, size / view.z)), p: [r2(x), r2(y)], sent: 0, lx: e.clientX, ly: e.clientY };
+    gesture = { type: 'draw' };
+    dirty = true;
+  }
+  function addPoint(sx, sy) {
+    if (!cur) return;
+    if (Math.hypot(sx - cur.lx, sy - cur.ly) < 1.5) return;
+    cur.lx = sx; cur.ly = sy;
+    const [x, y] = s2w(sx, sy);
+    cur.p.push(r2(x), r2(y));
+    dirty = true;
+    if (cur.p.length >= 3900) { // 太长就自动分段
+      const last = { clientX: sx, clientY: sy };
+      finishStroke(); startStroke(last);
+    }
+  }
+  function flushLive() {
+    if (!cur || cur.p.length <= cur.sent) return;
+    send({ t: 'draw', sid: cur.sid, c: cur.c, w: cur.w, p: cur.p.slice(cur.sent, cur.sent + 800) });
+    cur.sent = Math.min(cur.p.length, cur.sent + 800);
+  }
+  setInterval(flushLive, 60);
+  function finishStroke() {
+    if (!cur) return;
+    const s = cur; cur = null;
+    if (s.p.length === 2) s.p.push(s.p[0], s.p[1]);
+    pending.set(s.sid, s);
+    send({ t: 'end', sid: s.sid, c: s.c, w: s.w, p: s.p });
+    dirty = true;
+  }
+  function cancelStroke() {
+    if (!cur) return;
+    send({ t: 'cancel', sid: cur.sid });
+    cur = null; dirty = true;
+  }
+
+  let lastCur = 0;
+  function sendCursor(sx, sy) {
+    const now = performance.now();
+    if (now - lastCur < 45) return;
+    lastCur = now;
+    const [x, y] = s2w(sx, sy);
+    send({ t: 'cur', x: r2(x), y: r2(y) });
+  }
+
+  cv.addEventListener('pointerdown', (e) => {
+    try { cv.setPointerCapture(e.pointerId); } catch {}
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    fly = null;
+    if (pts.size === 2) {
+      cancelStroke();
+      const [a, b] = [...pts.values()];
+      gesture = { type: 'pinch', d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+      return;
+    }
+    if (pts.size > 2) return;
+    if (tool === 'hand' || space || e.button === 1 || e.button === 2) {
+      gesture = { type: 'pan', lx: e.clientX, ly: e.clientY };
+      cv.classList.add('grabbing');
+    } else if (e.button === 0 && tool === 'flag') {
+      pts.delete(e.pointerId);
+      flagAt(e.clientX, e.clientY);
+      return;
+    } else if (e.button === 0) {
+      if (view.z < DRAWZ) { toast('离得太远了，放大到 25% 以上才能画'); gesture = { type: 'wait' }; return; }
+      startStroke(e);
+    }
+    sendCursor(e.clientX, e.clientY);
+  });
+  cv.addEventListener('pointermove', (e) => {
+    const pt = pts.get(e.pointerId);
+    if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
+    if (e.pointerType !== 'touch' || pt) sendCursor(e.clientX, e.clientY);
+    if (!gesture || !pt) return;
+    if (gesture.type === 'pinch' && pts.size >= 2) {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y) || 1, mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      view.x -= (mx - gesture.mx) / view.z; view.y -= (my - gesture.my) / view.z;
+      zoomAt(mx, my, d / gesture.d);
+      gesture.d = d; gesture.mx = mx; gesture.my = my;
+    } else if (gesture.type === 'pan') {
+      view.x -= (e.clientX - gesture.lx) / view.z; view.y -= (e.clientY - gesture.ly) / view.z;
+      gesture.lx = e.clientX; gesture.ly = e.clientY;
+      changed();
+    } else if (gesture.type === 'draw') {
+      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+      if (evs && evs.length) for (const ev of evs) addPoint(ev.clientX, ev.clientY);
+      else addPoint(e.clientX, e.clientY);
+    }
+  });
+  function up(e) {
+    if (!pts.has(e.pointerId)) return;
+    pts.delete(e.pointerId);
+    if (!gesture) return;
+    if (gesture.type === 'draw') { finishStroke(); gesture = null; }
+    else if (gesture.type === 'pan') { gesture = null; cv.classList.remove('grabbing'); }
+    else if (pts.size < 2) gesture = pts.size ? { type: 'wait' } : null;
+  }
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', up);
+  cv.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  cv.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    fly = null;
+    // 触控板：双指滚动=平移，捏合(ctrlKey)=缩放；鼠标滚轮=缩放
+    const mouseWheel = e.deltaMode === 1 || (e.deltaX === 0 && Math.abs(e.deltaY) >= 100 && Number.isInteger(e.deltaY));
+    if (e.ctrlKey || e.metaKey) zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01));
+    else if (mouseWheel) zoomAt(e.clientX, e.clientY, Math.exp(-Math.sign(e.deltaY) * 0.18));
+    else { view.x += e.deltaX / view.z; view.y += e.deltaY / view.z; changed(); }
+  }, { passive: false });
+
+  function setTool(t) {
+    tool = t;
+    $('tPen').setAttribute('aria-pressed', t === 'pen');
+    $('tHand').setAttribute('aria-pressed', t === 'hand');
+    $('tFlag').setAttribute('aria-pressed', t === 'flag');
+    cv.classList.toggle('hand', t === 'hand' || space);
+    cv.classList.toggle('flag', t === 'flag');
+  }
+  function undo() {
+    const id = myStack.pop();
+    if (id == null) { toast('没有可以撤销的笔画'); return; }
+    send({ t: 'undo', id });
+  }
+  addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    if (e.code === 'Space') { space = true; cv.classList.add('hand'); e.preventDefault(); }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
+    else if (e.key === 'b' || e.key === 'B') setTool('pen');
+    else if (e.key === 'h' || e.key === 'H') setTool('hand');
+  });
+  addEventListener('keyup', (e) => { if (e.code === 'Space') { space = false; cv.classList.toggle('hand', tool === 'hand'); } });
+
+  // ---------- 界面 ----------
+  const pick = (box, el) => { for (const b of box.children) b.setAttribute('aria-pressed', b === el); };
+  COLORS.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.className = 'sw'; b.style.background = c; b.setAttribute('aria-label', '颜色 ' + c); b.setAttribute('aria-pressed', i === 0);
+    b.onclick = () => { color = c; pick($('colors'), b); setTool('pen'); };
+    $('colors').appendChild(b);
+  });
+  SIZES.forEach((s, i) => {
+    const b = document.createElement('button');
+    b.className = 'sz'; b.setAttribute('aria-label', '粗细 ' + s); b.setAttribute('aria-pressed', i === 1);
+    const d = 5 + i * 5; b.innerHTML = `<i style="width:${d}px;height:${d}px"></i>`;
+    b.onclick = () => { size = s; pick($('sizes'), b); setTool('pen'); };
+    $('sizes').appendChild(b);
+  });
+  $('tPen').onclick = () => setTool('pen');
+  $('tHand').onclick = () => setTool('hand');
+  $('tFlag').onclick = () => { setTool('flag'); toast('点一下乱涂的笔画来举报'); };
+  $('tUndo').onclick = undo;
+  $('zin').onclick = () => zoomAt(W / 2, H / 2, 1.4);
+  $('zout').onclick = () => zoomAt(W / 2, H / 2, 1 / 1.4);
+  $('online').onclick = () => send({ t: 'who' });
+  $('btnEmpty').onclick = () => send({ t: 'empty', x: view.x, y: view.y });
+  $('btnShare').onclick = async () => {
+    const url = `${location.origin}${location.pathname}#${Math.round(view.x)},${Math.round(view.y)},${view.z.toFixed(2)}`;
+    try { await navigator.clipboard.writeText(url); toast('位置链接已复制，发给朋友就能在这里碰面'); }
+    catch { prompt('复制这个链接：', url); }
+  };
+  $('me').onclick = () => {
+    const n = (prompt('给自己起个名字（别人会在你的光标旁看到）', myName) || '').trim().slice(0, 16);
+    if (!n) return;
+    myName = n; store.set('wc.name', n); $('myname').textContent = n;
+    send({ t: 'hello', uid, name: n });
+  };
+
+  let toastTimer = 0;
+  function toast(msg, ms = 2600) {
+    const t = $('toast'); t.textContent = msg; t.classList.add('on');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), ms);
+  }
+
+  resize();
+  connect();
+  requestAnimationFrame(loop);
+  if (!store.get('wc.seen')) {
+    store.set('wc.seen', '1');
+    setTimeout(() => toast('拖动就能画 · 双指或按住空格移动 · 捏合或滚轮缩放', 6000), 600);
+  }
+})();
+</script>
+</body>
+</html>

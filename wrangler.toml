@@ -1,0 +1,19 @@
+name = "world-canvas"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+workers_dev = true
+
+[assets]
+directory = "./public"
+
+[[durable_objects.bindings]]
+name = "WORLD"
+class_name = "World"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["World"]
+
+[[routes]]
+pattern = "canvas.findhappyman.com"
+custom_domain = true
