@@ -21,3 +21,6 @@ custom_domain = true
 # AI 画笔用 Cloudflare Workers AI，不需要额外的 API key
 [ai]
 binding = "AI"
+
+[vars]
+AI_ENABLED = "1"
