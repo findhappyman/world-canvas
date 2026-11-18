@@ -17,6 +17,11 @@ const N_CAP = 30;            // 笔画数桶
 const N_RATE = 6;            // 每秒可画笔数
 const DAY = 86_400_000;
 const REPORTS_PER_HOUR = 10;
+// 新人保护期：刚来的人这段时间里不能把笔画大面积压在别人的画上（画在旁边、添一小笔都可以）
+const NEW_MS = 5 * 60_000;
+const CELL = 16;             // 判断重叠用的网格边长（世界单位）
+const OVER_RATIO = 0.3;      // 一笔里超过这个比例压在别人画上……
+const OVER_MIN = 3;          // ……且至少压住这么多格，才算覆盖
 
 export default {
   async fetch(req, env) {
@@ -81,7 +86,15 @@ export class World extends DurableObject {
         target TEXT NOT NULL, reporter TEXT NOT NULL, ts INTEGER NOT NULL,
         PRIMARY KEY (target, reporter)
       ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS strokes_ts ON strokes (ts);
+      CREATE TABLE IF NOT EXISTS blocked (cx INTEGER NOT NULL, cy INTEGER NOT NULL, n INTEGER NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (cx, cy)) WITHOUT ROWID;
     `);
+    // 每个 IP 哈希第一次出现的时间。首次建表时用已有笔画回填，老用户不会被当成新人
+    const hadPeople = this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'people'").toArray().length;
+    if (!hadPeople) {
+      this.sql.exec("CREATE TABLE people (iph TEXT PRIMARY KEY, first INTEGER NOT NULL) WITHOUT ROWID");
+      this.sql.exec("INSERT OR IGNORE INTO people (iph, first) SELECT iph, MIN(ts) FROM strokes WHERE iph IS NOT NULL GROUP BY iph");
+    }
     let salt = this.sql.exec("SELECT v FROM kv WHERE k = 'salt'").toArray()[0]?.v;
     if (!salt) {
       salt = crypto.randomUUID();
@@ -107,6 +120,8 @@ export class World extends DurableObject {
     let same = 0;
     for (const m of this.meta.values()) if (m.iph === iph) same++;
     if (same >= MAX_CONN_PER_IP) return new Response("too many connections", { status: 429 });
+    this.sql.exec("INSERT OR IGNORE INTO people (iph, first) VALUES (?, ?)", iph, Date.now());
+    const first = this.sql.exec("SELECT first FROM people WHERE iph = ?", iph).one().first;
     const pair = new WebSocketPair();
     const ws = pair[1];
     this.ctx.acceptWebSocket(ws);
@@ -117,7 +132,7 @@ export class World extends DurableObject {
       h: PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)],
       view: null,
       x: 0, y: 0, pos: false,
-      iph, ban: this.banUntil(iph), admin: false, tries: 0,
+      iph, first, ban: this.banUntil(iph), admin: false, tries: 0,
     };
     ws.serializeAttachment(m);
     this.meta.set(ws, m);
@@ -160,7 +175,8 @@ export class World extends DurableObject {
         if (typeof m.uid === "string" && m.uid.length >= 8 && m.uid.length <= 64) me.uid = m.uid;
         me.n = String(m.name ?? "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 16) || "旅人";
         ws.serializeAttachment(me);
-        ws.send(JSON.stringify({ t: "welcome", id: me.id, h: me.h, n: this.meta.size }));
+        const fresh = Math.max(0, (me.first ?? 0) + NEW_MS - now);
+        ws.send(JSON.stringify({ t: "welcome", id: me.id, h: me.h, n: this.meta.size, fresh }));
         this.all(JSON.stringify({ t: "n", n: this.meta.size }));
         break;
       }
@@ -200,7 +216,13 @@ export class World extends DurableObject {
       case "end": {
         if (!this.sidOk(m.sid)) return;
         const why = this.save(ws, me, m);
-        if (why) ws.send(JSON.stringify({ t: "rej", sid: m.sid, why }));
+        if (why) {
+          const left = why === "new" ? Math.ceil(((me.first ?? 0) + NEW_MS - now) / 1000) : 0;
+          ws.send(JSON.stringify({ t: "rej", sid: m.sid, why, left }));
+          // 别人已经看到了这笔的实时预览，要撤掉
+          const s = JSON.stringify({ t: "cancel", from: me.id, sid: m.sid });
+          for (const [o, om] of this.meta) if (o !== ws && om.view) { try { o.send(s); } catch {} }
+        }
         break;
       }
       case "undo": {
@@ -259,6 +281,10 @@ export class World extends DurableObject {
       }
       case "modlist": {
         if (me.admin) this.sendModList(ws);
+        break;
+      }
+      case "recent": {
+        if (me.admin) this.sendRecent(ws);
         break;
       }
       case "peek": {
@@ -332,6 +358,84 @@ export class World extends DurableObject {
     ws.send(JSON.stringify({ t: "modlist", now, list: [...map.values()] }));
   }
 
+  // 最近 24 小时有人画过的区块，按最后一笔时间倒序，附带被拦下的新人覆盖次数
+  sendRecent(ws) {
+    const now = Date.now();
+    const list = [];
+    const rows = this.sql.exec(`
+      SELECT k.cx, k.cy, COUNT(*) AS n, COUNT(DISTINCT COALESCE(s.iph, s.owner)) AS people, MAX(s.ts) AS ts
+      FROM strokes s JOIN chunks k ON k.sid = s.id
+      WHERE s.ts > ? AND s.hidden = 0
+      GROUP BY k.cx, k.cy ORDER BY ts DESC LIMIT 80`, now - DAY);
+    this.sql.exec("DELETE FROM blocked WHERE ts < ?", now - DAY);
+    const blocked = new Map();
+    for (const r of this.sql.exec("SELECT cx, cy, n, ts FROM blocked")) blocked.set(r.cx + "," + r.cy, r);
+    for (const r of rows) {
+      const k = r.cx + "," + r.cy;
+      const b = blocked.get(k);
+      blocked.delete(k);
+      list.push({ x: (r.cx + 0.5) * CHUNK, y: (r.cy + 0.5) * CHUNK, n: r.n, people: r.people, ts: Math.max(r.ts, b?.ts ?? 0), blocked: b ? b.n : 0 });
+    }
+    // 只有被拦、没有新画的区块也列出来
+    for (const b of blocked.values()) {
+      list.push({ x: (b.cx + 0.5) * CHUNK, y: (b.cy + 0.5) * CHUNK, n: 0, people: 0, ts: b.ts, blocked: b.n });
+    }
+    list.sort((a, b) => b.ts - a.ts);
+    ws.send(JSON.stringify({ t: "recent", now, list: list.slice(0, 80) }));
+  }
+
+  // 新人这一笔是否大面积压在别人（非本人、未隐藏）的画上
+  covers(p, w, b, me) {
+    const cells = new Set();
+    const mark = (set, x0, y0, x1, y1) => {
+      const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (CELL / 2)));
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        set.add(Math.floor((x0 + (x1 - x0) * t) / CELL) + "," + Math.floor((y0 + (y1 - y0) * t) / CELL));
+      }
+    };
+    for (let i = 2; i < p.length; i += 2) mark(cells, p[i - 2], p[i - 1], p[i], p[i + 1]);
+    if (p.length === 2) mark(cells, p[0], p[1], p[0], p[1]);
+    const pad = MAX_W;
+    const [qx0, qy0, qx1, qy1] = [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad];
+    const rows = this.sql.exec(`
+      SELECT DISTINCT s.id, s.w, s.p FROM chunks k JOIN strokes s ON s.id = k.sid
+      WHERE k.cx BETWEEN ? AND ? AND k.cy BETWEEN ? AND ?
+        AND s.hidden = 0 AND s.owner != ? AND (s.iph IS NULL OR s.iph != ?)
+        AND s.x1 >= ? AND s.x0 <= ? AND s.y1 >= ? AND s.y0 <= ?
+      LIMIT 400`,
+      Math.floor(qx0 / CHUNK), Math.floor(qx1 / CHUNK), Math.floor(qy0 / CHUNK), Math.floor(qy1 / CHUNK),
+      me.uid, me.iph, qx0, qx1, qy0, qy1);
+    const other = new Set();
+    let maxW = 0;
+    for (const r of rows) {
+      let q;
+      try { q = JSON.parse(r.p); } catch { continue; }
+      maxW = Math.max(maxW, r.w);
+      for (let i = 2; i < q.length; i += 2) {
+        // 只取落在新笔画附近的线段
+        const sx0 = Math.min(q[i - 2], q[i]), sx1 = Math.max(q[i - 2], q[i]);
+        const sy0 = Math.min(q[i - 1], q[i + 1]), sy1 = Math.max(q[i - 1], q[i + 1]);
+        if (sx1 < qx0 || sx0 > qx1 || sy1 < qy0 || sy0 > qy1) continue;
+        mark(other, q[i - 2], q[i - 1], q[i], q[i + 1]);
+      }
+      if (q.length === 2) mark(other, q[0], q[1], q[0], q[1]);
+    }
+    if (!other.size) return false;
+    // 两笔的中心线距离小于两者半宽之和，就算压住了
+    const R = Math.ceil((w / 2 + maxW / 2) / CELL);
+    let hit = 0;
+    for (const c of cells) {
+      const [gx, gy] = c.split(",").map(Number);
+      let found = false;
+      for (let dx = -R; dx <= R && !found; dx++)
+        for (let dy = -R; dy <= R && !found; dy++)
+          if (dx * dx + dy * dy <= R * R && other.has(gx + dx + "," + (gy + dy))) found = true;
+      if (found) hit++;
+    }
+    return hit >= OVER_MIN && hit / cells.size > OVER_RATIO;
+  }
+
   banUntil(who) {
     return this.sql.exec("SELECT until FROM bans WHERE who = ?", who).toArray()[0]?.until ?? 0;
   }
@@ -386,6 +490,15 @@ export class World extends DurableObject {
     const cx0 = Math.floor(b[0] / CHUNK), cy0 = Math.floor(b[1] / CHUNK);
     const cx1 = Math.floor(b[2] / CHUNK), cy1 = Math.floor(b[3] / CHUNK);
     if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 64) return "bad";
+    if (!me.admin && (me.first ?? 0) + NEW_MS > Date.now() && this.covers(p, w, b, me)) {
+      // 记下被拦的位置和次数，给管理员巡查用
+      const now = Date.now();
+      this.sql.exec(
+        "INSERT INTO blocked (cx, cy, n, ts) VALUES (?, ?, 1, ?) ON CONFLICT (cx, cy) DO UPDATE SET n = CASE WHEN ts < ? THEN 1 ELSE n + 1 END, ts = excluded.ts",
+        Math.floor((b[0] + b[2]) / 2 / CHUNK), Math.floor((b[1] + b[3]) / 2 / CHUNK), now, now - DAY
+      );
+      return "new";
+    }
     const pj = JSON.stringify(p);
     const id = this.sql
       .exec(

@@ -63,9 +63,13 @@
     max-height: calc(100vh - 160px); display: flex; flex-direction: column; overflow: hidden; }
   #mod[hidden], #btnMod[hidden] { display: none; }
   #mod header { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-  #mod header button { width: 28px; height: 28px; border-radius: 8px; color: var(--muted); }
+  #modClose { width: 28px; height: 28px; border-radius: 8px; color: var(--muted); }
   #mod header button:hover { background: rgba(0,0,0,.05); }
+  #modTabs { display: flex; gap: 4px; }
+  #modTabs button { padding: 5px 10px; border-radius: 8px; font-weight: 600; color: var(--muted); }
+  #modTabs button.on { background: rgba(0,0,0,.06); color: var(--ink); }
   #modList { overflow-y: auto; }
+  #modList .warn { color: #d93d42; font-weight: 600; }
   #modList .row { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
   #modList .row:last-child { border-bottom: 0; }
   #modList .info { flex: 1; min-width: 0; }
@@ -129,7 +133,7 @@
 </div>
 
 <div id="mod" class="card" hidden>
-  <header><b>被处罚的人</b><button id="modClose" aria-label="关闭">✕</button></header>
+  <header><div id="modTabs"><button data-tab="recent" class="on">最近新增</button><button data-tab="mod">被处罚的人</button></div><button id="modClose" aria-label="关闭">✕</button></header>
   <div id="modList"></div>
 </div>
 
@@ -326,6 +330,7 @@
           pending.delete(m.sid); dirty = true;
           if (m.why === 'ink') toast('画得太快太多了，歇几秒再继续');
           else if (m.why === 'ban') toast('你被多人举报，24 小时内暂时不能画');
+          else if (m.why === 'new') toast(`刚来的 5 分钟内，先别把画盖在别人的作品上，在旁边或空白处画吧（还剩 ${Math.max(1, Math.ceil(m.left / 60))} 分钟）`, 5000);
           break;
         case 'banned': cancelStroke(); toast('你被多人举报，近期的画已被隐藏，24 小时内暂时不能画', 6000); break;
         case 'reload': strokes.clear(); chunkIdx.clear(); loaded.clear(); live.clear(); dirty = true; syncView(); break;
@@ -335,7 +340,8 @@
           else toast(`已举报（${m.n}/${m.need}），再有人举报就会隐藏这位作者近期的画`, 4500);
           break;
         case 'unbanned': toast('你的禁画已被管理员解除，画也恢复了', 5000); break;
-        case 'modlist': renderMod(m); break;
+        case 'modlist': if (modTab === 'mod') renderMod(m); break;
+        case 'recent': if (modTab === 'recent') renderRecent(m); break;
         case 'ghost': ghosts = m.s; dirty = true; if (!m.s.length) toast('这个人没有被隐藏的笔画'); break;
         case 'admin': isAdmin = m.ok; $('btnMod').hidden = !m.ok; toast(m.ok ? '管理员模式已开启：用举报工具点笔画即可处理' : '管理员口令不对'); break;
         case 'del': { removeStroke(m.id); const i = myStack.indexOf(m.id); if (i >= 0) myStack.splice(i, 1); break; }
@@ -414,7 +420,41 @@
       box.appendChild(row);
     }
   }
-  $('btnMod').onclick = () => { const p = $('mod'); p.hidden = !p.hidden; if (!p.hidden) send({ t: 'modlist' }); else { ghosts = []; dirty = true; } };
+  // 最近有人画过的区块，管理员逐个点过去巡查
+  const ago = (ms) => ms < 60000 ? '刚刚' : ms < 3600000 ? Math.floor(ms / 60000) + ' 分钟前' : Math.floor(ms / 3600000) + ' 小时前';
+  function renderRecent(m) {
+    const box = $('modList');
+    box.textContent = '';
+    if (!m.list.length) {
+      const e = document.createElement('div'); e.className = 'empty'; e.textContent = '最近 24 小时没有人画'; box.appendChild(e); return;
+    }
+    for (const it of m.list) {
+      const row = document.createElement('div'); row.className = 'row';
+      const info = document.createElement('div'); info.className = 'info';
+      const name = document.createElement('b'); name.textContent = ago(m.now - it.ts);
+      const sub = document.createElement('div');
+      sub.textContent = it.n ? `${it.n} 笔 · ${it.people} 人` : '没有新画';
+      if (it.blocked) {
+        const w = document.createElement('span'); w.className = 'warn'; w.textContent = ` · 拦下 ${it.blocked} 次覆盖`;
+        sub.appendChild(w);
+      }
+      info.append(name, sub);
+      const go = document.createElement('button'); go.className = 'go'; go.textContent = '去看';
+      go.onclick = () => { ghosts = []; flyTo(it.x, it.y, clamp(Math.min(W, H) * 0.95 / CHUNK, MINZ, 1)); };
+      row.append(info, go);
+      box.appendChild(row);
+    }
+  }
+  let modTab = 'recent';
+  function openTab(t) {
+    modTab = t;
+    for (const b of $('modTabs').children) b.classList.toggle('on', b.dataset.tab === t);
+    $('modList').textContent = '';
+    ghosts = []; dirty = true;
+    send({ t: t === 'mod' ? 'modlist' : 'recent' });
+  }
+  for (const b of $('modTabs').children) b.onclick = () => openTab(b.dataset.tab);
+  $('btnMod').onclick = () => { const p = $('mod'); p.hidden = !p.hidden; if (!p.hidden) openTab(modTab); else { ghosts = []; dirty = true; } };
   $('modClose').onclick = () => { $('mod').hidden = true; ghosts = []; dirty = true; };
 
   // 找到屏幕坐标下最上层的笔画（举报用）
