@@ -1,6 +1,7 @@
 // 无界画布 —— 实时后端
 // 一个 Durable Object 承载整个世界：SQLite 按区块存笔画，WebSocket 按视野转发实时事件。
 import { DurableObject } from "cloudflare:workers";
+import { generate } from "./ai.js";
 
 const CHUNK = 2048; // 世界单位；须与前端一致
 const COLOR = /^#[0-9a-f]{6}$/;
@@ -22,6 +23,10 @@ const NEW_MS = 5 * 60_000;
 const CELL = 16;             // 判断重叠用的网格边长（世界单位）
 const OVER_RATIO = 0.3;      // 一笔里超过这个比例压在别人画上……
 const OVER_MIN = 3;          // ……且至少压住这么多格，才算覆盖
+// AI 画笔
+const AI_PER_HOUR = 5;        // 每个 IP 每小时最多画几幅
+const AI_DAILY = 300;         // 全站每天上限（控制费用），可用环境变量 AI_DAILY 覆盖
+const AI_MIN = 150, AI_MAX = 6000; // 画框边长范围（世界单位）
 
 export default {
   async fetch(req, env) {
@@ -79,6 +84,7 @@ export class World extends DurableObject {
     const cols = this.sql.exec("PRAGMA table_info(strokes)").toArray().map((r) => r.name);
     if (!cols.includes("iph")) this.sql.exec("ALTER TABLE strokes ADD COLUMN iph TEXT");
     if (!cols.includes("hidden")) this.sql.exec("ALTER TABLE strokes ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
+    if (!cols.includes("ai")) this.sql.exec("ALTER TABLE strokes ADD COLUMN ai INTEGER NOT NULL DEFAULT 0");
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
       CREATE TABLE IF NOT EXISTS bans (who TEXT PRIMARY KEY, until INTEGER NOT NULL);
@@ -87,6 +93,8 @@ export class World extends DurableObject {
         PRIMARY KEY (target, reporter)
       ) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS strokes_ts ON strokes (ts);
+      CREATE TABLE IF NOT EXISTS ai_log (iph TEXT NOT NULL, ts INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS ai_log_ts ON ai_log (ts);
       CREATE TABLE IF NOT EXISTS blocked (cx INTEGER NOT NULL, cy INTEGER NOT NULL, n INTEGER NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (cx, cy)) WITHOUT ROWID;
     `);
     // 每个 IP 哈希第一次出现的时间。首次建表时用已有笔画回填，老用户不会被当成新人
@@ -103,6 +111,7 @@ export class World extends DurableObject {
     this.salt = salt;
     this.buckets = new Map(); // iph -> {ink, n, t}
     this.flood = new WeakMap(); // ws -> {t, c}
+    this.aiBusy = new Set(); // 正在生成的 IP 哈希，一人同时只能画一幅
     this.given = new Map(); // "cx,cy" -> 发放时间，刚分给别人的空地先别再给
     // 休眠唤醒后从附件恢复连接状态
     this.meta = new Map();
@@ -176,7 +185,7 @@ export class World extends DurableObject {
         me.n = String(m.name ?? "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 16) || "旅人";
         ws.serializeAttachment(me);
         const fresh = Math.max(0, (me.first ?? 0) + NEW_MS - now);
-        ws.send(JSON.stringify({ t: "welcome", id: me.id, h: me.h, n: this.meta.size, fresh }));
+        ws.send(JSON.stringify({ t: "welcome", id: me.id, h: me.h, n: this.meta.size, fresh, ai: this.aiOn() }));
         this.all(JSON.stringify({ t: "n", n: this.meta.size }));
         break;
       }
@@ -262,7 +271,7 @@ export class World extends DurableObject {
         me.tries++;
         me.admin = !!key && typeof m.key === "string" && m.key === key;
         ws.serializeAttachment(me);
-        ws.send(JSON.stringify({ t: "admin", ok: me.admin }));
+        ws.send(JSON.stringify({ t: "admin", ok: me.admin, ai: me.admin || this.aiOn() }));
         break;
       }
       case "mod": {
@@ -281,6 +290,10 @@ export class World extends DurableObject {
       }
       case "modlist": {
         if (me.admin) this.sendModList(ws);
+        break;
+      }
+      case "ai": {
+        this.startAi(ws, me, m);
         break;
       }
       case "recent": {
@@ -499,11 +512,20 @@ export class World extends DurableObject {
       );
       return "new";
     }
+    const { out } = this.insert(me, m.sid, m.c, w, p, b, 0);
+    this.relay(out, b, null, ws);
+    return null;
+  }
+
+  // 写入一笔并返回广播用的消息
+  insert(me, sid, c, w, p, b, ai, g) {
+    const cx0 = Math.floor(b[0] / CHUNK), cy0 = Math.floor(b[1] / CHUNK);
+    const cx1 = Math.floor(b[2] / CHUNK), cy1 = Math.floor(b[3] / CHUNK);
     const pj = JSON.stringify(p);
     const id = this.sql
       .exec(
-        "INSERT INTO strokes (owner, c, w, p, x0, y0, x1, y1, ts, iph) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id",
-        me.uid, m.c, w, pj, b[0], b[1], b[2], b[3], Date.now(), me.iph
+        "INSERT INTO strokes (owner, c, w, p, x0, y0, x1, y1, ts, iph, ai) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+        me.uid, c, w, pj, b[0], b[1], b[2], b[3], Date.now(), me.iph, ai
       )
       .one().id;
     for (let cx = cx0; cx <= cx1; cx++) {
@@ -511,9 +533,70 @@ export class World extends DurableObject {
         this.sql.exec("INSERT OR IGNORE INTO chunks (cx, cy, sid) VALUES (?,?,?)", cx, cy, id);
       }
     }
-    const out = `{"t":"stroke","from":"${me.id}","sid":"${m.sid}","s":{"id":${id},"c":"${m.c}","w":${w},"p":${pj}}}`;
-    this.relay(out, b, null, ws);
-    return null;
+    const gp = g ? `,"g":"${g}"` : "";
+    return { id, out: `{"t":"stroke","from":"${me.id}","sid":"${sid}"${gp},"s":{"id":${id},"c":"${c}","w":${w},"p":${pj}}}` };
+  }
+
+  // AI 画笔对所有人开放的开关：wrangler.toml 里 AI_ENABLED = "1"（本地假 AI 模式默认打开）；管理员始终能用
+  aiOn() {
+    return this.env.AI_ENABLED === "1" || this.env.AI_MOCK === "1";
+  }
+
+  // AI 画笔：校验 → 记配额 → 流式生成，每出一笔就存下并广播
+  async startAi(ws, me, m) {
+    const fail = (why) => { try { ws.send(JSON.stringify({ t: "aierr", why })); } catch {} };
+    const q = typeof m.q === "string" ? m.q.replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 200) : "";
+    const x = num(m.x, -1e9, 1e9), y = num(m.y, -1e9, 1e9), sz = num(m.s, AI_MIN, AI_MAX);
+    if (!q || x === null || y === null || sz === null || !me.uid) return fail("bad");
+    if (!me.admin && !this.aiOn()) return fail("off");
+    if (!this.env.AI && this.env.AI_MOCK !== "1") return fail("off");
+    const now = Date.now();
+    if (me.ban > now || this.banUntil("u:" + me.uid) > now) return fail("ban");
+    if (this.aiBusy.has(me.iph)) return fail("busy1");
+    if (!me.admin) {
+      const mine = this.sql.exec("SELECT COUNT(*) AS n FROM ai_log WHERE iph = ? AND ts > ?", me.iph, now - 3_600_000).one().n;
+      if (mine >= AI_PER_HOUR) return fail("quota");
+      const all = this.sql.exec("SELECT COUNT(*) AS n FROM ai_log WHERE ts > ?", now - DAY).one().n;
+      if (all >= (Number(this.env.AI_DAILY) || AI_DAILY)) return fail("daily");
+    }
+    // 只能画在空白处：画框内（留 5% 边）不能有别人的画，避免借 AI 盖住别人的作品
+    const pad = sz * 0.05, box = [x + pad, y + pad, x + sz - pad, y + sz - pad];
+    const taken = this.sql.exec(`
+      SELECT 1 FROM chunks k JOIN strokes s ON s.id = k.sid
+      WHERE k.cx BETWEEN ? AND ? AND k.cy BETWEEN ? AND ?
+        AND s.hidden = 0 AND s.owner != ? AND (s.iph IS NULL OR s.iph != ?)
+        AND s.x1 >= ? AND s.x0 <= ? AND s.y1 >= ? AND s.y0 <= ?
+      LIMIT 1`,
+      Math.floor(box[0] / CHUNK), Math.floor(box[2] / CHUNK), Math.floor(box[1] / CHUNK), Math.floor(box[3] / CHUNK),
+      me.uid, me.iph, box[0], box[2], box[1], box[3]).toArray().length;
+    if (taken) return fail("taken");
+
+    this.sql.exec("INSERT INTO ai_log (iph, ts) VALUES (?, ?)", me.iph, now);
+    this.sql.exec("DELETE FROM ai_log WHERE ts < ?", now - 2 * DAY);
+    this.aiBusy.add(me.iph);
+    const g = crypto.randomUUID().slice(0, 8);
+    const area = [x, y, x + sz, y + sz];
+    const frame = (on) => this.relay(JSON.stringify({ t: "aibox", g, from: me.id, on, x, y, s: sz, n: me.n, h: me.h, q: on ? q : undefined }), area, null, ws);
+    frame(true);
+    let k = 0;
+    try {
+      const res = await generate(this.env, q, (st) => {
+        const p = [];
+        for (let i = 0; i < st.p.length; i += 2) p.push(r2(x + (st.p[i] / 1000) * sz), r2(y + (st.p[i + 1] / 1000) * sz));
+        const w = r2(Math.min(MAX_W, Math.max(0.5, (st.w / 1000) * sz)));
+        const { out } = this.insert(me, "ai" + g + "x" + k++, st.c, w, p, bbox(p, w / 2), 1, g);
+        this.relay(out, area, null, ws);
+      });
+      if (res.why) {
+        this.sql.exec("DELETE FROM ai_log WHERE rowid = (SELECT MAX(rowid) FROM ai_log WHERE iph = ?)", me.iph); // 没画出来不算次数
+        fail(res.why);
+      } else {
+        try { ws.send(JSON.stringify({ t: "aidone", g, n: res.n })); } catch {}
+      }
+    } finally {
+      this.aiBusy.delete(me.iph);
+      frame(false);
+    }
   }
 
   load(ws, keys) {

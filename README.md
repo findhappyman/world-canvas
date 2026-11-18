@@ -20,6 +20,7 @@
 
 - 无限画布：拖动平移、滚轮 / 双指缩放，网址里的 `#x,y,缩放` 就是位置，可以直接分享
 - 自由笔刷：多种颜色和粗细，可撤销自己的笔画
+- AI 画笔：说一句想画的东西或此刻的心情，AI 在空白处一笔一笔画出来，别人能实时看到；不满意可以整幅撤销（用 Cloudflare Workers AI，默认 `@cf/openai/gpt-oss-120b`）
 - 实时在场：看到其他人的光标、名字和正在画的线
 - 进来就有空地：新访客自动落在空白区域；「找空地」随时换一块
 - 防破坏：按 IP 限速、限墨量、缩得太小不能画、举报后自动隐藏并禁画 24 小时
@@ -34,6 +35,7 @@
 |------|------|
 | `public/index.html` | 全部前端：Canvas 2D 渲染、交互、WebSocket 客户端 |
 | `src/index.js` | Cloudflare Worker + 一个 Durable Object（`World`），SQLite 存储笔画，WebSocket 广播 |
+| `src/ai.js` | AI 画笔：调用 Workers AI，把流式输出的每一行解析成一笔 |
 | `wrangler.toml` | Worker 配置 |
 
 世界被切成 2048×2048 的区块。客户端只加载视野附近的区块，服务器也只把消息转发给视野相交的连接，所以画布再大，单个用户的流量也不会跟着变大。
@@ -55,6 +57,8 @@ ADMIN_KEY=随便一个本地口令
 
 然后打开 http://localhost:8787/?admin 。
 
+本地默认不连 Cloudflare 的远程 AI。想测试 AI 画笔，在 `.dev.vars` 里加一行 `AI_MOCK=1`，会用一幅固定的假画走完整流程。想在本地调用真的 AI：`AI_REMOTE=1 npm run dev`（需要已 `wrangler login`）。
+
 ## 部署到你自己的 Cloudflare 账号
 
 1. 删掉 `wrangler.toml` 末尾的 `[[routes]]`（那是本站的自定义域名），或者换成你自己的域名
@@ -62,11 +66,21 @@ ADMIN_KEY=随便一个本地口令
 3. `npx wrangler secret put ADMIN_KEY`，设置管理员口令
 4. `npm run deploy`
 
+AI 画笔默认只对管理员开放。确认能正常出画后，在 `wrangler.toml` 里加上下面这段并重新部署，就会对所有人开放：
+
+```toml
+[vars]
+AI_ENABLED = "1"
+# AI_MODEL = "@cf/openai/gpt-oss-120b"  # 可换成其他 Workers AI 文本模型
+# AI_DAILY = "300"                       # 全站每天最多画几幅
+```
+
+限制：每个 IP 每小时 5 幅、全站每天 300 幅，同一时间每人只能画一幅，只能画在没有别人作品的空白处。
+
 ## 接下来想探索的
 
 这些都还没想清楚，项目也许会长成意想不到的样子，欢迎一起讨论：
 
-- **AI 画笔**：不会画的人描述一种感受，由 AI 帮忙画到画布上
 - **Agent 接入**：开放接口，让不同的 AI 助手也能进入同一张画布作画
 - **更好的防破坏**：在不打扰认真作画的人的前提下，减少乱涂和覆盖别人的作品
 - **长久保存**：让共同创作的痕迹保存得更久，区块链是否合适还在研究

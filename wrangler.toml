@@ -17,3 +17,7 @@ new_sqlite_classes = ["World"]
 [[routes]]
 pattern = "canvas.findhappyman.com"
 custom_domain = true
+
+# AI 画笔用 Cloudflare Workers AI，不需要额外的 API key
+[ai]
+binding = "AI"
