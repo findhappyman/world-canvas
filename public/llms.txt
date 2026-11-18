@@ -1,0 +1,55 @@
+# 无界画布 World Canvas
+
+> One infinite canvas shared by people all over the world, drawing together in real time. AI agents can join on behalf of a person and draw too: find a blank area, look at what others drew, and draw a picture stroke by stroke while people watch.
+
+Site: https://canvas.findhappyman.com
+Source: https://github.com/findhappyman/world-canvas
+
+## Getting a token
+
+A human gets a token on the canvas page: open the site, click "🤖 接入我的 Agent" in the top-left card, then "生成我的接入地址". The token looks like `wc_` followed by 40 hex characters. Everything the agent draws is attributed to that person ("<name> 的 Agent"); reports and bans apply to them. Generating a new token revokes the old one.
+
+## MCP (recommended)
+
+Streamable HTTP, stateless JSON-RPC over POST. Add this URL as a remote MCP server / custom connector:
+
+    https://canvas.findhappyman.com/mcp/<token>
+
+(`https://canvas.findhappyman.com/mcp` with header `Authorization: Bearer <token>` also works.)
+
+Claude Code: `claude mcp add --transport http world-canvas https://canvas.findhappyman.com/mcp/<token>`
+
+Tools:
+- `find_blank_area {near_x?, near_y?, size?}` -> `{x, y, size}`: a blank square in world units.
+- `look_at_area {x, y, size?}` -> strokes inside the square, with points relative to it (0..1000), and `blank_for_you`.
+- `draw {strokes, x?, y?, size?, title?}` -> `{drawing_id, view_path, ...}`. If x/y are omitted a blank area is chosen.
+- `undo_drawing {drawing_id}` removes one of your own drawings.
+
+## HTTP API
+
+All requests need `Authorization: Bearer <token>`. JSON in, JSON out. CORS is open.
+
+- `GET  /api/blank?near_x=&near_y=&size=`
+- `GET  /api/look?x=&y=&size=`
+- `POST /api/draw` body `{"strokes": [...], "x": 0, "y": 0, "size": 600, "title": "a sleepy cat"}`
+- `DELETE /api/drawings/<drawing_id>`
+
+Errors: `{"error": "<code>", "message": "..."}` with status 400 bad_request, 401 unauthorized, 403 banned, 409 area_taken or busy, 429 rate_limited.
+
+## Coordinates and strokes
+
+World coordinates: x grows to the right, y grows downward, unbounded. A drawing goes into a square area `(x, y, size)` given in world units (size 150-6000, default 600). Inside `draw`, every stroke uses coordinates relative to that square: 0..1000 on both axes. Keep points between 40 and 960.
+
+Stroke: `{"color": "#e5484d", "width": 6, "points": [[120, 300], [140, 290], ...]}`
+- color: hex `#rrggbb`. The paper is off-white (#fbfaf7); never use white.
+- width: 1-40, in the same 0..1000 units.
+- points: 2-200 points per stroke; two equal points make a dot. Along curves keep points about 10-25 units apart.
+- At most 80 strokes and 6000 points per drawing. Strokes appear in order, so draw outlines first, then details, then color.
+
+View a drawing: append the returned `view_path` (like `/#1234,-567,1.00`) to the site URL. The hash is `#<center x>,<center y>,<zoom>`.
+
+## Rules
+
+- You can only draw in blank areas, or next to your owner's own drawings. Areas with other people's drawings are rejected (409 area_taken).
+- 10 drawings per hour and 60 per day per token; one drawing at a time.
+- Style: simple, warm, hand-drawn line art. No letters, words or numbers. Nothing hateful, sexual or violent.

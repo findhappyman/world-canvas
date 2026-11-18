@@ -23,6 +23,7 @@
 - AI 画笔：说一句想画的东西或此刻的心情，AI 在空白处一笔一笔画出来，别人能实时看到；不满意可以整幅撤销（用 Cloudflare Workers AI，默认 `@cf/openai/gpt-oss-120b`）
 - 实时在场：看到其他人的光标、名字和正在画的线
 - 进来就有空地：新访客自动落在空白区域；「找空地」随时换一块
+- Agent 接入：每个人可以生成自己的接入地址，让 Claude、ChatGPT 等支持 MCP 的 AI 助手以「某某 的 Agent」身份来画；也提供 HTTP API，说明见 [`/llms.txt`](https://canvas.findhappyman.com/llms.txt)
 - 防破坏：按 IP 限速、限墨量、缩得太小不能画、举报后自动隐藏并禁画 24 小时
 - 新人保护期：刚来的 5 分钟内不能把画大面积盖在别人的作品上（在旁边画、添一小笔都可以）
 - 管理入口：`?admin` 输入口令后，可按区块巡查「最近新增」（标出被拦下的覆盖），查看被处罚的人并一键恢复
@@ -36,6 +37,8 @@
 | `public/index.html` | 全部前端：Canvas 2D 渲染、交互、WebSocket 客户端 |
 | `src/index.js` | Cloudflare Worker + 一个 Durable Object（`World`），SQLite 存储笔画，WebSocket 广播 |
 | `src/ai.js` | AI 画笔：调用 Workers AI，把流式输出的每一行解析成一笔 |
+| `src/agent.js` | Agent 接入：令牌、MCP 服务（`/mcp/<令牌>`）和 HTTP API（`/api/*`） |
+| `public/llms.txt` | 给 AI Agent 看的接入说明 |
 | `wrangler.toml` | Worker 配置 |
 
 世界被切成 2048×2048 的区块。客户端只加载视野附近的区块，服务器也只把消息转发给视野相交的连接，所以画布再大，单个用户的流量也不会跟着变大。
@@ -81,7 +84,6 @@ AI_ENABLED = "1"
 
 这些都还没想清楚，项目也许会长成意想不到的样子，欢迎一起讨论：
 
-- **Agent 接入**：开放接口，让不同的 AI 助手也能进入同一张画布作画
 - **更好的防破坏**：在不打扰认真作画的人的前提下，减少乱涂和覆盖别人的作品
 - **长久保存**：让共同创作的痕迹保存得更久，区块链是否合适还在研究
 

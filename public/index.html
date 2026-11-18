@@ -92,6 +92,22 @@
   #aiGo:disabled { opacity: .5; cursor: default; }
   #tAI[hidden] { display: none; }
   #tAI { font-size: 13px; font-weight: 700; width: auto; padding: 0 10px; gap: 4px; grid-auto-flow: column; }
+  #btnAgent { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+  #btnAgent:hover { color: var(--ink); }
+  #agent { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(480px, calc(100vw - 24px));
+    max-height: calc(100vh - 40px); overflow-y: auto; padding: 18px; user-select: text; -webkit-user-select: text; z-index: 5; }
+  #agent[hidden] { display: none; }
+  #agent h2 { margin: 0 0 6px; font-size: 16px; }
+  #agent p { margin: 6px 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+  #agent .field { margin-top: 12px; }
+  #agent .field b { display: block; font-size: 12px; margin-bottom: 4px; }
+  #agent .copy { display: flex; gap: 6px; }
+  #agent code, #agent pre { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: #fff; border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 9px; overflow-x: auto; white-space: pre; flex: 1; min-width: 0; margin: 0; }
+  #agent button.cp { flex: none; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: #fff; font-size: 12px; font-weight: 600; }
+  #agent .acts { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+  #agent .acts button { padding: 8px 14px; border-radius: 10px; font-weight: 600; border: 1px solid var(--line); background: #fff; }
+  #agent .acts button.go { background: var(--ink); color: #fff; border-color: var(--ink); }
   #toast { position: fixed; left: 50%; bottom: 86px; transform: translate(-50%, 8px); padding: 9px 14px; font-size: 13px;
     opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s; white-space: nowrap; max-width: calc(100vw - 24px);
     overflow: hidden; text-overflow: ellipsis; }
@@ -121,6 +137,7 @@
   <h1>无界画布</h1>
   <div class="sub" id="pos">x 0 · y 0 · 100%</div>
   <button id="me" title="点击改名"><i></i>你是 <b id="myname"></b></button>
+  <button id="btnAgent" title="让你自己的 AI 助手（Claude、ChatGPT 等）来画布上画画">🤖 接入我的 Agent</button>
 </div>
 
 <div id="nav">
@@ -167,6 +184,16 @@
   <textarea id="aiQ" maxlength="200" placeholder="说说你想画什么，或者此刻的心情…"></textarea>
   <div class="sugs" id="aiSugs"></div>
   <div class="row"><span class="hint">AI 会画在中间的虚线框里，只能画在空白处</span><button id="aiGo">开始画</button></div>
+</div>
+
+<div id="agent" class="card" hidden>
+  <h2>🤖 接入你的 Agent</h2>
+  <p>把下面的地址加到 Claude、ChatGPT 等支持 MCP 的 AI 助手里，它就能以「<span id="agName"></span> 的 Agent」的身份来画布上找空地、看看别人画了什么、自己画一幅。</p>
+  <p>它画的内容算在你名下，被举报处罚也会算到你身上。只能画在空白处，每小时最多 10 幅。</p>
+  <div id="agBody">
+    <div class="acts" style="justify-content:flex-start"><button class="go" id="agGen">生成我的接入地址</button></div>
+  </div>
+  <div class="acts"><button id="agOff" hidden>停用</button><button id="agClose">关闭</button></div>
 </div>
 
 <div id="toast" class="card"></div>
@@ -384,9 +411,10 @@
         case 'recent': if (modTab === 'recent') renderRecent(m); break;
         case 'aibox':
           if (m.from === me.id) break;
-          if (m.on) frames.set(m.g, { x: m.x, y: m.y, s: m.s, who: m.n, q: m.q, h: m.h, t0: performance.now(), drawing: false });
+          if (m.on) frames.set(m.g, { x: m.x, y: m.y, s: m.s, who: m.n, q: m.q, h: m.h, t0: performance.now(), drawing: m.kind === 'agent', agent: m.kind === 'agent' });
           else frames.delete(m.g);
           dirty = true; break;
+        case 'agentkey': renderAgent(m); break;
         case 'aidone':
           aiEnd();
           toast(m.n ? `画好了，共 ${m.n} 笔。不满意可以点撤销，整幅一起撤掉` : 'AI 这次没画出来，换个说法试试', 5000);
@@ -633,7 +661,10 @@
     // 模型先要想半分钟左右才落第一笔，这段时间显示「构思中」和秒数
     const status = (j) => j.drawing ? 'AI 正在画：' + j.q : `AI 正在构思「${j.q}」… ${Math.floor((now - j.t0) / 1000)} 秒`;
     if (aiJob) { const [sx, sy] = w2s(aiJob.x, aiJob.y); box(sx, sy, aiJob.s * z, status(aiJob), '#8e4ec6'); }
-    for (const f of frames.values()) { const [sx, sy] = w2s(f.x, f.y); box(sx, sy, f.s * z, f.who + ' 的 ' + status(f), f.h); }
+    for (const f of frames.values()) {
+      const [sx, sy] = w2s(f.x, f.y);
+      box(sx, sy, f.s * z, f.agent ? `${f.who} 正在画${f.q ? '：' + f.q : ''}` : f.who + ' 的 ' + status(f), f.h);
+    }
     if (aiJob || frames.size) dirty = true;
 
     // 别人的光标
@@ -787,6 +818,7 @@
     if (ids.g) toast('撤掉了 AI 画的这一整幅');
   }
   addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('agent').hidden) { $('agent').hidden = true; return; }
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.code === 'Space') { space = true; cv.classList.add('hand'); e.preventDefault(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
@@ -873,6 +905,43 @@
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); aiGo(); }
     else if (e.key === 'Escape') aiOpen(false);
   });
+
+  // ---------- Agent 接入 ----------
+  function field(label, text) {
+    const d = document.createElement('div'); d.className = 'field';
+    const b = document.createElement('b'); b.textContent = label;
+    const row = document.createElement('div'); row.className = 'copy';
+    const c = document.createElement(text.includes('\n') ? 'pre' : 'code'); c.textContent = text;
+    const btn = document.createElement('button'); btn.className = 'cp'; btn.textContent = '复制';
+    btn.onclick = async () => { try { await navigator.clipboard.writeText(text); btn.textContent = '已复制'; setTimeout(() => (btn.textContent = '复制'), 1500); } catch { prompt('复制：', text); } };
+    row.append(c, btn); d.append(b, row); return d;
+  }
+  function renderAgent(m) {
+    const body = $('agBody');
+    if (m.why) { toast({ ban: '你被多人举报，24 小时内不能接入 Agent', quota: '今天生成次数太多了，明天再来', bad: '还没连上，稍等再试' }[m.why] || '生成失败', 4000); return; }
+    if (m.revoked) { body.textContent = ''; body.append(Object.assign(document.createElement('p'), { textContent: '已停用。之前给出的地址都失效了，需要时可以重新生成。' })); $('agOff').hidden = true; agentGenButton(); return; }
+    const mcp = `${location.origin}/mcp/${m.key}`;
+    body.textContent = '';
+    const warn = document.createElement('p'); warn.textContent = '⚠️ 这个地址只显示这一次，相当于你的画笔钥匙，不要公开分享。弄丢了就重新生成，旧的会立即失效。';
+    body.append(
+      warn,
+      field('MCP 地址（Claude / ChatGPT 的「自定义连接器」里填这个）', mcp),
+      field('Claude Code 一行命令', `claude mcp add --transport http world-canvas ${mcp}`),
+      field('直接调用 HTTP API（任何 Agent 或脚本）', `curl -H "Authorization: Bearer ${m.key}" ${location.origin}/api/blank`),
+    );
+    const doc = document.createElement('p'); doc.innerHTML = '接口说明见 <a href="/llms.txt" target="_blank" rel="noopener">/llms.txt</a>。接好后对你的助手说：「去无界画布找块空地，画一只晒太阳的猫」。';
+    body.append(doc);
+    $('agOff').hidden = false;
+  }
+  function agentGenButton() {
+    const a = document.createElement('div'); a.className = 'acts'; a.style.justifyContent = 'flex-start';
+    const b = document.createElement('button'); b.className = 'go'; b.textContent = '生成我的接入地址'; b.onclick = () => send({ t: 'agentkey' });
+    a.append(b); $('agBody').append(a);
+  }
+  $('agGen').onclick = () => send({ t: 'agentkey' });
+  $('btnAgent').onclick = () => { $('agName').textContent = myName; $('agent').hidden = false; };
+  $('agClose').onclick = () => { $('agent').hidden = true; };
+  $('agOff').onclick = () => { if (confirm('停用后，你的 Agent 就不能再来画了。之前的地址全部失效。确定吗？')) send({ t: 'agentrevoke' }); };
 
   let toastTimer = 0;
   function toast(msg, ms = 2600) {

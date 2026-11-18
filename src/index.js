@@ -2,6 +2,7 @@
 // 一个 Durable Object 承载整个世界：SQLite 按区块存笔画，WebSocket 按视野转发实时事件。
 import { DurableObject } from "cloudflare:workers";
 import { generate } from "./ai.js";
+import { initAgentTables, issueKey, revokeKeys, handleAgentHttp } from "./agent.js";
 
 const CHUNK = 2048; // 世界单位；须与前端一致
 const COLOR = /^#[0-9a-f]{6}$/;
@@ -31,6 +32,10 @@ const AI_MIN = 150, AI_MAX = 6000; // 画框边长范围（世界单位）
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+    // Agent 接入：HTTP API 和 MCP 都交给 Durable Object 处理
+    if (url.pathname.startsWith("/api/") || url.pathname === "/mcp" || url.pathname.startsWith("/mcp/")) {
+      return env.WORLD.get(env.WORLD.idFromName("world")).fetch(req);
+    }
     if (url.pathname === "/ws") {
       if (req.headers.get("Upgrade") !== "websocket") {
         return new Response("expected websocket", { status: 426 });
@@ -84,7 +89,8 @@ export class World extends DurableObject {
     const cols = this.sql.exec("PRAGMA table_info(strokes)").toArray().map((r) => r.name);
     if (!cols.includes("iph")) this.sql.exec("ALTER TABLE strokes ADD COLUMN iph TEXT");
     if (!cols.includes("hidden")) this.sql.exec("ALTER TABLE strokes ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
-    if (!cols.includes("ai")) this.sql.exec("ALTER TABLE strokes ADD COLUMN ai INTEGER NOT NULL DEFAULT 0");
+    if (!cols.includes("ai")) this.sql.exec("ALTER TABLE strokes ADD COLUMN ai INTEGER NOT NULL DEFAULT 0"); // 0 手画 1 AI 画笔 2 Agent
+    if (!cols.includes("g")) this.sql.exec("ALTER TABLE strokes ADD COLUMN g TEXT"); // AI/Agent 一整幅画的组 id
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
       CREATE TABLE IF NOT EXISTS bans (who TEXT PRIMARY KEY, until INTEGER NOT NULL);
@@ -111,6 +117,8 @@ export class World extends DurableObject {
     this.salt = salt;
     this.buckets = new Map(); // iph -> {ink, n, t}
     this.flood = new WeakMap(); // ws -> {t, c}
+    initAgentTables(this.sql);
+    this.agentBusy = new Set(); // 正在画的 Agent 令牌
     this.aiBusy = new Set(); // 正在生成的 IP 哈希，一人同时只能画一幅
     this.given = new Map(); // "cx,cy" -> 发放时间，刚分给别人的空地先别再给
     // 休眠唤醒后从附件恢复连接状态
@@ -122,6 +130,7 @@ export class World extends DurableObject {
   }
 
   async fetch(req) {
+    if (req.headers.get("Upgrade") !== "websocket") return handleAgentHttp(this, req);
     // 不存原始 IP，只存加盐哈希，用于限速、举报计数和封禁
     const ip = req.headers.get("CF-Connecting-IP") || "local";
     const dig = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(this.salt + ip));
@@ -294,6 +303,15 @@ export class World extends DurableObject {
       }
       case "ai": {
         this.startAi(ws, me, m);
+        break;
+      }
+      case "agentkey": {
+        issueKey(this, me).then((r) => { try { ws.send(JSON.stringify({ t: "agentkey", ...r })); } catch {} });
+        break;
+      }
+      case "agentrevoke": {
+        revokeKeys(this, me);
+        ws.send('{"t":"agentkey","revoked":true}');
         break;
       }
       case "recent": {
@@ -524,8 +542,8 @@ export class World extends DurableObject {
     const pj = JSON.stringify(p);
     const id = this.sql
       .exec(
-        "INSERT INTO strokes (owner, c, w, p, x0, y0, x1, y1, ts, iph, ai) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
-        me.uid, c, w, pj, b[0], b[1], b[2], b[3], Date.now(), me.iph, ai
+        "INSERT INTO strokes (owner, c, w, p, x0, y0, x1, y1, ts, iph, ai, g) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+        me.uid, c, w, pj, b[0], b[1], b[2], b[3], Date.now(), me.iph, ai, g ?? null
       )
       .one().id;
     for (let cx = cx0; cx <= cx1; cx++) {
@@ -535,6 +553,19 @@ export class World extends DurableObject {
     }
     const gp = g ? `,"g":"${g}"` : "";
     return { id, out: `{"t":"stroke","from":"${me.id}","sid":"${sid}"${gp},"s":{"id":${id},"c":"${c}","w":${w},"p":${pj}}}` };
+  }
+
+  // 画框（留 5% 边）里有没有别人（非本人、未隐藏）的画
+  boxTaken(x, y, sz, me) {
+    const pad = sz * 0.05, box = [x + pad, y + pad, x + sz - pad, y + sz - pad];
+    return this.sql.exec(`
+      SELECT 1 FROM chunks k JOIN strokes s ON s.id = k.sid
+      WHERE k.cx BETWEEN ? AND ? AND k.cy BETWEEN ? AND ?
+        AND s.hidden = 0 AND s.owner != ? AND (s.iph IS NULL OR s.iph != ?)
+        AND s.x1 >= ? AND s.x0 <= ? AND s.y1 >= ? AND s.y0 <= ?
+      LIMIT 1`,
+      Math.floor(box[0] / CHUNK), Math.floor(box[2] / CHUNK), Math.floor(box[1] / CHUNK), Math.floor(box[3] / CHUNK),
+      me.uid, me.iph, box[0], box[2], box[1], box[3]).toArray().length > 0;
   }
 
   // AI 画笔对所有人开放的开关：wrangler.toml 里 AI_ENABLED = "1"（本地假 AI 模式默认打开）；管理员始终能用
@@ -560,16 +591,7 @@ export class World extends DurableObject {
       if (all >= (Number(this.env.AI_DAILY) || AI_DAILY)) return fail("daily");
     }
     // 只能画在空白处：画框内（留 5% 边）不能有别人的画，避免借 AI 盖住别人的作品
-    const pad = sz * 0.05, box = [x + pad, y + pad, x + sz - pad, y + sz - pad];
-    const taken = this.sql.exec(`
-      SELECT 1 FROM chunks k JOIN strokes s ON s.id = k.sid
-      WHERE k.cx BETWEEN ? AND ? AND k.cy BETWEEN ? AND ?
-        AND s.hidden = 0 AND s.owner != ? AND (s.iph IS NULL OR s.iph != ?)
-        AND s.x1 >= ? AND s.x0 <= ? AND s.y1 >= ? AND s.y0 <= ?
-      LIMIT 1`,
-      Math.floor(box[0] / CHUNK), Math.floor(box[2] / CHUNK), Math.floor(box[1] / CHUNK), Math.floor(box[3] / CHUNK),
-      me.uid, me.iph, box[0], box[2], box[1], box[3]).toArray().length;
-    if (taken) return fail("taken");
+    if (this.boxTaken(x, y, sz, me)) return fail("taken");
 
     this.sql.exec("INSERT INTO ai_log (iph, ts) VALUES (?, ?)", me.iph, now);
     this.sql.exec("DELETE FROM ai_log WHERE ts < ?", now - 2 * DAY);
