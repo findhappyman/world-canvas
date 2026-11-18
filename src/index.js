@@ -118,6 +118,13 @@ export class World extends DurableObject {
     this.buckets = new Map(); // iph -> {ink, n, t}
     this.flood = new WeakMap(); // ws -> {t, c}
     initAgentTables(this.sql);
+    // 作品索引：每位作者在每个区块一行，用于「随便逛逛」均匀抽样（按笔画抽会偏向笔画多、ID 靠后的作品）
+    const hadWorks = this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'works'").toArray().length;
+    if (!hadWorks) {
+      this.sql.exec("CREATE TABLE works (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, cx INTEGER NOT NULL, cy INTEGER NOT NULL, UNIQUE (owner, cx, cy))");
+      this.sql.exec(`INSERT OR IGNORE INTO works (owner, cx, cy)
+        SELECT owner, CAST(floor((x0 + x1) / 2 / ${CHUNK}) AS INTEGER), CAST(floor((y0 + y1) / 2 / ${CHUNK}) AS INTEGER) FROM strokes WHERE hidden = 0`);
+    }
     this.agentBusy = new Set(); // 正在画的 Agent 令牌
     this.aiBusy = new Set(); // 正在生成的 IP 哈希，一人同时只能画一幅
     this.given = new Map(); // "cx,cy" -> 发放时间，刚分给别人的空地先别再给
@@ -353,6 +360,15 @@ export class World extends DurableObject {
         ws.send(JSON.stringify({ t: "who", list }));
         break;
       }
+      case "mine": {
+        ws.send(JSON.stringify({ t: "mine", list: me.uid ? this.myWorks(me.uid) : [] }));
+        break;
+      }
+      case "random": {
+        const skip = Array.isArray(m.skip) ? m.skip.filter((k) => typeof k === "string" && k.length < 40).slice(0, 20) : [];
+        ws.send(JSON.stringify({ t: "random", ...(this.randomWork(me, new Set(skip), skip[skip.length - 1]) || { none: true }) }));
+        break;
+      }
       case "empty": {
         let x = num(m.x, -1e9, 1e9), y = num(m.y, -1e9, 1e9);
         if (x === null || y === null) [x, y] = this.entrySeed();
@@ -551,8 +567,79 @@ export class World extends DurableObject {
         this.sql.exec("INSERT OR IGNORE INTO chunks (cx, cy, sid) VALUES (?,?,?)", cx, cy, id);
       }
     }
+    this.sql.exec("INSERT OR IGNORE INTO works (owner, cx, cy) VALUES (?, ?, ?)", me.uid,
+      Math.floor((b[0] + b[2]) / 2 / CHUNK), Math.floor((b[1] + b[3]) / 2 / CHUNK));
     const gp = g ? `,"g":"${g}"` : "";
     return { id, out: `{"t":"stroke","from":"${me.id}","sid":"${sid}"${gp},"s":{"id":${id},"c":"${c}","w":${w},"p":${pj}}}` };
+  }
+
+  // 我自己的作品，最近的在前：按区块汇总后把挨在一起的合并成一幅
+  myWorks(uid) {
+    const rows = this.sql.exec("SELECT cx, cy FROM works WHERE owner = ? ORDER BY id DESC LIMIT 200", uid).toArray();
+    const parts = [];
+    for (const w of rows) {
+      const rs = this.sql.exec(`
+        SELECT s.id, s.x0, s.y0, s.x1, s.y1, s.ts, s.ai FROM chunks k JOIN strokes s ON s.id = k.sid
+        WHERE k.cx = ? AND k.cy = ? AND s.owner = ? AND s.hidden = 0 LIMIT 2000`, w.cx, w.cy, uid).toArray();
+      if (!rs.length) continue;
+      const p = { ids: new Set(), b: [Infinity, Infinity, -Infinity, -Infinity], ts: 0, ai: 0 };
+      for (const r of rs) {
+        p.ids.add(r.id);
+        p.b = [Math.min(p.b[0], r.x0), Math.min(p.b[1], r.y0), Math.max(p.b[2], r.x1), Math.max(p.b[3], r.y1)];
+        p.ts = Math.max(p.ts, r.ts); p.ai = Math.max(p.ai, r.ai);
+      }
+      parts.push(p);
+    }
+    // 包围盒相交或相距不到 300 的算同一幅
+    const near = (a, b) => a[0] - 300 <= b[2] && b[0] - 300 <= a[2] && a[1] - 300 <= b[3] && b[1] - 300 <= a[3];
+    const works = [];
+    for (const p of parts) {
+      const w = works.find((o) => near(o.b, p.b));
+      if (w) {
+        w.b = [Math.min(w.b[0], p.b[0]), Math.min(w.b[1], p.b[1]), Math.max(w.b[2], p.b[2]), Math.max(w.b[3], p.b[3])];
+        for (const id of p.ids) w.ids.add(id); // 一笔跨区块时会在两个区块里各出现一次，按 id 去重
+        w.ts = Math.max(w.ts, p.ts); w.ai = Math.max(w.ai, p.ai);
+      } else works.push({ ...p, ids: new Set(p.ids) });
+    }
+    works.sort((a, b) => b.ts - a.ts);
+    return works.slice(0, 30).map((w) => ({
+      x: (w.b[0] + w.b[2]) / 2, y: (w.b[1] + w.b[3]) / 2, span: Math.max(w.b[2] - w.b[0], w.b[3] - w.b[1], 200),
+      n: w.ids.size, ts: w.ts, by: w.ai === 2 ? "agent" : w.ai === 1 ? "ai" : "human",
+    }));
+  }
+
+  // 随机挑一幅别人的作品：从作品索引里均匀抽一行，再把同一作者在附近 3×3 区块里的笔画合成一幅
+  // skip 是客户端最近看过的作品 key，尽量不重复；优先笔数多一点的，避免总落在一个点上
+  randomWork(me, skip, last) {
+    const max = this.sql.exec("SELECT MAX(id) AS m FROM works").one().m;
+    if (!max) return null;
+    let best = null;
+    for (let i = 0; i < 16; i++) {
+      const w = this.sql.exec("SELECT id, owner, cx, cy FROM works WHERE id >= ? ORDER BY id LIMIT 1", 1 + Math.floor(Math.random() * max)).toArray()[0];
+      if (!w || w.owner === me.uid) continue;
+      const g = this.sql.exec(`
+        SELECT COUNT(*) AS n, MIN(s.x0) AS x0, MIN(s.y0) AS y0, MAX(s.x1) AS x1, MAX(s.y1) AS y1, MAX(s.ts) AS ts, MAX(s.ai) AS ai, MAX(s.iph) AS iph
+        FROM (SELECT DISTINCT sid FROM chunks WHERE cx BETWEEN ? AND ? AND cy BETWEEN ? AND ?) k
+        JOIN strokes s ON s.id = k.sid
+        WHERE s.hidden = 0 AND s.owner = ?`,
+        w.cx - 1, w.cx + 1, w.cy - 1, w.cy + 1, w.owner).one();
+      if (!g.n) {
+        // 全都撤销了就删掉这条索引；只是被隐藏（可能被管理员恢复）则保留
+        const any = this.sql.exec(`SELECT 1 FROM (SELECT DISTINCT sid FROM chunks WHERE cx BETWEEN ? AND ? AND cy BETWEEN ? AND ?) k
+          JOIN strokes s ON s.id = k.sid WHERE s.owner = ? LIMIT 1`, w.cx - 1, w.cx + 1, w.cy - 1, w.cy + 1, w.owner).toArray().length;
+        if (!any) this.sql.exec("DELETE FROM works WHERE id = ?", w.id);
+        continue;
+      }
+      if (g.iph && g.iph === me.iph) continue; // 同一个人换了浏览器
+      const key = w.owner.slice(0, 8) + ":" + w.cx + "," + w.cy;
+      const cand = { key, n: g.n, x: (g.x0 + g.x1) / 2, y: (g.y0 + g.y1) / 2, span: Math.max(g.x1 - g.x0, g.y1 - g.y0, 200), ts: g.ts, by: g.ai === 2 ? "agent" : g.ai === 1 ? "ai" : "human" };
+      const score = (key === last ? -2000 : skip.has(key) ? -1000 : 0) + Math.min(cand.n, 5); // 刚看过的那幅排最后
+      if (!best || score > best.score) best = { ...cand, score };
+      if (score >= 5) break;
+    }
+    if (!best) return null;
+    delete best.score;
+    return best;
   }
 
   // 画框（留 5% 边）里有没有别人（非本人、未隐藏）的画

@@ -122,6 +122,12 @@
     #bar { flex-wrap: wrap; justify-content: center; row-gap: 2px; width: calc(100vw - 24px); }
     #colors { order: -1; flex: 1 0 100%; justify-content: center; }
     #bar > .sep:first-of-type { display: none; }
+    /* 顶部按钮多了，手机上放到左上角卡片下面单独一行，放不下就横向滑动 */
+    #nav { top: calc(max(12px, env(safe-area-inset-top)) + 114px); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right));
+      max-width: none; justify-content: flex-start; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 2px; }
+    #nav::-webkit-scrollbar { display: none; }
+    #nav button { flex: none; }
+    #mod { top: calc(max(12px, env(safe-area-inset-top)) + 160px); max-height: calc(100vh - 300px); }
     #bar { gap: 2px; padding: 6px; }
     #tAI { width: 38px; padding: 0; } #tAI span { display: none; }
     .sz { width: 26px; }
@@ -142,6 +148,8 @@
 
 <div id="nav">
   <button id="online" class="card off" title="飞到一位在线的人身边"><span class="dot"></span><span id="count">连接中…</span></button>
+  <button id="btnMine" class="card" title="回到我画过的地方，再点一次看上一幅 (M)">我的画</button>
+  <button id="btnRandom" class="card" title="随机飞到别人的一幅作品 (R)"><span class="l">随便</span>逛逛</button>
   <button id="btnEmpty" class="card" title="找一块没人画过的地方">找空地</button>
   <button id="btnShare" class="card" title="复制当前位置的链接">分享<span class="l">位置</span></button>
   <button id="btnMod" class="card" hidden title="查看被处罚的人，恢复误伤">管理</button>
@@ -247,7 +255,7 @@
   function changed(skipHash) {
     dirty = true;
     $('pos').textContent = `x ${Math.round(view.x)} · y ${Math.round(view.y)} · ${Math.round(view.z * 100)}%`;
-    if (!syncTimer) syncTimer = setTimeout(() => { syncTimer = 0; syncView(); }, 120);
+    if (!syncTimer) syncTimer = setTimeout(() => { syncTimer = 0; fly ? syncView(fly, true) : syncView(); }, 120);
     if (!skipHash) {
       clearTimeout(hashTimer);
       hashTimer = setTimeout(() => {
@@ -265,6 +273,7 @@
   let fly = null;
   function flyTo(x, y, z) {
     fly = { x0: view.x, y0: view.y, z0: view.z, x, y, z: z ?? view.z, t0: performance.now(), d: 700 };
+    syncView(fly, true); // 起飞就开始加载目的地
     dirty = true;
   }
 
@@ -330,13 +339,15 @@
   }
 
   // 告诉服务器我的视野，并补齐视野内还没加载的区块
-  function syncView() {
+  // v 是要加载的视野；飞行途中传目的地并保留当前区块（keep），落地后再卸载
+  function syncView(v = view, keep = false) {
     if (!ws || ws.readyState !== 1) return;
-    const hw = W / 2 / view.z, hh = H / 2 / view.z;
-    const cx0 = Math.floor((view.x - hw) / CHUNK) - 1, cy0 = Math.floor((view.y - hh) / CHUNK) - 1;
-    const cx1 = Math.floor((view.x + hw) / CHUNK) + 1, cy1 = Math.floor((view.y + hh) / CHUNK) + 1;
+    const hw = W / 2 / v.z, hh = H / 2 / v.z;
+    const cx0 = Math.floor((v.x - hw) / CHUNK) - 1, cy0 = Math.floor((v.y - hh) / CHUNK) - 1;
+    const cx1 = Math.floor((v.x + hw) / CHUNK) + 1, cy1 = Math.floor((v.y + hh) / CHUNK) + 1;
+    if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 400) return; // 缩得极小时不加载，避免一次请求太多
     send({ t: 'view', r: [cx0 * CHUNK, cy0 * CHUNK, (cx1 + 1) * CHUNK, (cy1 + 1) * CHUNK] });
-    for (const k of [...loaded]) {
+    if (!keep) for (const k of [...loaded]) {
       const [cx, cy] = k.split(',').map(Number);
       if (cx < cx0 || cx > cx1 || cy < cy0 || cy > cy1) unloadChunk(k);
     }
@@ -354,7 +365,13 @@
 
   // ---------- 网络 ----------
   let ws = null, retry = 1000;
-  function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+  // 没连上时：光标之类的直接丢掉；用户点按钮发起的操作要提示一下，不能悄悄没反应
+  const USER_ACTS = new Set(['mine', 'random', 'empty', 'ai', 'agentkey', 'agentrevoke', 'who']);
+  function send(o) {
+    if (ws && ws.readyState === 1) { ws.send(JSON.stringify(o)); return true; }
+    if (USER_ACTS.has(o.t)) toast('正在连接，稍等一下再试');
+    return false;
+  }
   function connect() {
     ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
     ws.onopen = () => {
@@ -466,6 +483,26 @@
           toast(`飞到 ${p.n} 身边`);
           break;
         }
+        case 'mine': {
+          if (!m.list.length) { toast('你还没画过，先在这里画一笔吧'); break; }
+          // 列表变了（新画了一幅）就从最新的开始；否则接着往前翻
+          const sig = m.list.map((w) => Math.round(w.x) + ',' + Math.round(w.y)).join('|');
+          mineIdx = sig === mineSig ? (mineIdx + 1) % m.list.length : 0;
+          mineSig = sig;
+          const w = m.list[mineIdx];
+          flyTo(w.x, w.y, clamp(Math.min(W, H) * 0.7 / w.span, MINZ, 2));
+          const how = w.by === 'agent' ? '（你的 Agent 画的）' : w.by === 'ai' ? '（AI 画笔）' : '';
+          toast(m.list.length > 1 ? `你的第 ${mineIdx + 1}/${m.list.length} 幅${how} · ${ago(Date.now() - w.ts)}，再点看上一幅` : `你的画${how} · ${ago(Date.now() - w.ts)}`, 3500);
+          break;
+        }
+        case 'random': {
+          if (m.none) { toast('画布上还没有别人的作品，先来画第一笔吧'); break; }
+          seenWorks.push(m.key); if (seenWorks.length > 20) seenWorks.shift();
+          flyTo(m.x, m.y, clamp(Math.min(W, H) * 0.7 / m.span, MINZ, 2));
+          const who = m.by === 'agent' ? '一位朋友的 Agent' : m.by === 'ai' ? '有人用 AI 画笔' : '一位旅人';
+          toast(`${who}${ago(Date.now() - m.ts)}画的，${m.n} 笔`, 3500);
+          break;
+        }
         case 'empty':
           if (m.entry) {
             if (!needEntry) break;
@@ -516,7 +553,7 @@
     }
   }
   // 最近有人画过的区块，管理员逐个点过去巡查
-  const ago = (ms) => ms < 60000 ? '刚刚' : ms < 3600000 ? Math.floor(ms / 60000) + ' 分钟前' : Math.floor(ms / 3600000) + ' 小时前';
+  const ago = (ms) => ms < 60000 ? '刚刚' : ms < 3600000 ? Math.floor(ms / 60000) + ' 分钟前' : ms < 86400000 ? Math.floor(ms / 3600000) + ' 小时前' : Math.floor(ms / 86400000) + ' 天前';
   function renderRecent(m) {
     const box = $('modList');
     box.textContent = '';
@@ -824,6 +861,8 @@
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
     else if (e.key === 'b' || e.key === 'B') setTool('pen');
     else if (e.key === 'h' || e.key === 'H') setTool('hand');
+    else if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey) $('btnRandom').click();
+    else if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey) $('btnMine').click();
   });
   addEventListener('keyup', (e) => { if (e.code === 'Space') { space = false; cv.classList.toggle('hand', tool === 'hand'); } });
 
@@ -849,7 +888,11 @@
   $('zin').onclick = () => zoomAt(W / 2, H / 2, 1.4);
   $('zout').onclick = () => zoomAt(W / 2, H / 2, 1 / 1.4);
   $('online').onclick = () => send({ t: 'who' });
-  $('btnEmpty').onclick = () => send({ t: 'empty', x: view.x, y: view.y });
+  $('btnEmpty').onclick = () => { needEntry = false; send({ t: 'empty', x: view.x, y: view.y }); };
+  let mineIdx = -1, mineSig = '';
+  $('btnMine').onclick = () => { needEntry = false; send({ t: 'mine' }); };
+  const seenWorks = []; // 最近看过的作品，随便逛逛时尽量不重复
+  $('btnRandom').onclick = () => { needEntry = false; send({ t: 'random', skip: seenWorks }); };
   $('btnShare').onclick = async () => {
     const url = `${location.origin}${location.pathname}#${Math.round(view.x)},${Math.round(view.y)},${view.z.toFixed(2)}`;
     try { await navigator.clipboard.writeText(url); toast('位置链接已复制，发给朋友就能在这里碰面'); }
@@ -894,7 +937,7 @@
     if (aiJob) return;
     const b = aiFrame();
     aiJob = { ...b, q, t0: performance.now(), drawing: false };
-    send({ t: 'ai', q, x: r2(b.x), y: r2(b.y), s: r2(b.s) });
+    if (!send({ t: 'ai', q, x: r2(b.x), y: r2(b.y), s: r2(b.s) })) { aiJob = null; return; }
     $('aiGo').disabled = true; $('aiGo').textContent = '正在画…';
     aiOpen(false);
     toast('AI 先构思半分钟左右，然后会一笔一笔画出来', 5000);
