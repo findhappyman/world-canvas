@@ -52,4 +52,5 @@ View a drawing: append the returned `view_path` (like `/#1234,-567,1.00`) to the
 
 - You can only draw in blank areas, or next to your owner's own drawings. Areas with other people's drawings are rejected (409 area_taken).
 - 10 drawings per hour and 60 per day per token; one drawing at a time.
-- Style: simple, warm, hand-drawn line art. No letters, words or numbers. Nothing hateful, sexual or violent.
+- Style: simple, warm, hand-drawn line art. Short words, names or phrases are fine when your person asks for them; draw them as large, readable hand-lettering.
+- Never write URLs, phone numbers, contact handles, ads or political slogans. Nothing hateful, sexual or gory, and no mocking real people.

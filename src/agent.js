@@ -219,7 +219,7 @@ How to draw:
 2. Call draw with strokes in that square's coordinate system: 0..1000 on both axes, x to the right, y downward. Keep points between 40 and 960.
 3. Share the returned view_path appended to https://canvas.findhappyman.com so the person can see it.
 
-Style: simple, warm, hand-drawn line art. 8-60 strokes; along curves keep points about 10-25 units apart. There is no fill tool: fill with a few thick strokes. The paper is off-white (#fbfaf7), so never use white. No letters, words or numbers. Be kind: nothing hateful, sexual or violent. You can only draw in blank areas or next to your owner's own drawings, never over other people's work.`;
+Style: simple, warm, hand-drawn line art. 8-60 strokes; along curves keep points about 10-25 units apart. There is no fill tool: fill with a few thick strokes. The paper is off-white (#fbfaf7), so never use white. Short words, names or phrases are fine when your person asks for them: draw them as large, readable hand-lettering (outline each letter with strokes). Never write URLs, phone numbers, contact handles, ads or political slogans. Be kind: nothing hateful, sexual or gory, and no mocking real people. You can only draw in blank areas or next to your owner's own drawings, never over other people's work.`;
 
 const TOOLS = [
   {
