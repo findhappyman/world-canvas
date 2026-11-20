@@ -14,8 +14,10 @@ Rules:
 - Use 8 to 60 strokes in total. Draw the main outlines first, then details, then color accents: viewers watch the strokes appear in order.
 - There is no fill tool. To fill an area, use a few thick strokes.
 - The paper is off-white (#fbfaf7). Use a small, harmonious palette of colors that show up on it. Never use white.
-- Never draw letters, words, numbers, or any writing.
-- If the request is hateful, sexual, violent, or targets a real person, do not draw it. Output exactly one line: SKIP`;
+- Do not add writing on your own. But if the person asks for a word, a name, or a short phrase (up to about 12 letters or 6 Chinese characters), draw it as decorative hand-lettering: outline each letter with strokes, keep letters large, evenly spaced and clearly readable, then add a few ornaments around them. Drawing the requested text is fine and expected.
+- Never write URLs, phone numbers, contact handles, ads, or slogans for products or politics.
+- Only if the request is clearly hateful, sexual, gory, or meant to mock or attack a real person, output exactly one line: SKIP
+- For anything else, draw it. Gentle conflict (two cats squabbling, a pirate ship) and famous people as friendly cartoons are fine. When in doubt, draw a kind version instead of skipping.`;
 
 const LINE = /^(#[0-9a-fA-F]{6})\s+(\d+(?:\.\d+)?)\s+(.+)$/;
 const MAX_STROKES = 80;
