@@ -21,6 +21,7 @@ const DAY = 86_400_000;
 const REPORTS_PER_HOUR = 10;
 // 新人保护期：刚来的人这段时间里不能把笔画大面积压在别人的画上（画在旁边、添一小笔都可以）
 const NEW_MS = 5 * 60_000;
+const PAIR_MS = 30 * 60_000;  // 在场的人这么久之内画的笔，新人可以叠着画（合画）
 const CELL = 16;             // 判断重叠用的网格边长（世界单位）
 const OVER_RATIO = 0.3;      // 一笔里超过这个比例压在别人画上……
 const OVER_MIN = 3;          // ……且至少压住这么多格，才算覆盖
@@ -446,16 +447,24 @@ export class World extends DurableObject {
     const pad = MAX_W;
     const [qx0, qy0, qx1, qy1] = [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad];
     const rows = this.sql.exec(`
-      SELECT DISTINCT s.id, s.w, s.p FROM chunks k JOIN strokes s ON s.id = k.sid
+      SELECT DISTINCT s.id, s.w, s.p, s.owner, s.ts FROM chunks k JOIN strokes s ON s.id = k.sid
       WHERE k.cx BETWEEN ? AND ? AND k.cy BETWEEN ? AND ?
         AND s.hidden = 0 AND s.owner != ? AND (s.iph IS NULL OR s.iph != ?)
         AND s.x1 >= ? AND s.x0 <= ? AND s.y1 >= ? AND s.y0 <= ?
       LIMIT 400`,
       Math.floor(qx0 / CHUNK), Math.floor(qx1 / CHUNK), Math.floor(qy0 / CHUNK), Math.floor(qy1 / CHUNK),
       me.uid, me.iph, qx0, qx1, qy0, qy1);
+    // 合画：此刻在线、正看着这里的人，他们刚画的笔不算"别人的画"
+    const near = new Set();
+    for (const om of this.meta.values()) {
+      const v = om.view;
+      if (om.uid && om.uid !== me.uid && v && b[0] <= v[2] && b[2] >= v[0] && b[1] <= v[3] && b[3] >= v[1]) near.add(om.uid);
+    }
+    const since = Date.now() - PAIR_MS;
     const other = new Set();
     let maxW = 0;
     for (const r of rows) {
+      if (near.has(r.owner) && (r.ts ?? 0) > since) continue;
       let q;
       try { q = JSON.parse(r.p); } catch { continue; }
       maxW = Math.max(maxW, r.w);
