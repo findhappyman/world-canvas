@@ -757,7 +757,8 @@
 
   function startStroke(e) {
     const [x, y] = s2w(e.clientX, e.clientY);
-    cur = { sid: rid(8), c: color, w: r2(Math.max(0.2, size / view.z)), p: [r2(x), r2(y)], sent: 0, lx: e.clientX, ly: e.clientY };
+    cur = { sid: rid(8), c: color, w: r2(Math.max(0.2, size / view.z)), p: [r2(x), r2(y)], sent: 0, lx: e.clientX, ly: e.clientY,
+      hold: e.pointerType === 'touch' ? performance.now() + 150 : 0 };
     gesture = { type: 'draw' };
     dirty = true;
   }
@@ -769,12 +770,12 @@
     cur.p.push(r2(x), r2(y));
     dirty = true;
     if (cur.p.length >= 3900) { // 太长就自动分段
-      const last = { clientX: sx, clientY: sy };
+      const last = { clientX: sx, clientY: sy, pointerType: 'mouse' };
       finishStroke(); startStroke(last);
     }
   }
   function flushLive() {
-    if (!cur || cur.p.length <= cur.sent) return;
+    if (!cur || cur.p.length <= cur.sent || performance.now() < cur.hold) return;
     send({ t: 'draw', sid: cur.sid, c: cur.c, w: cur.w, p: cur.p.slice(cur.sent, cur.sent + 800) });
     cur.sent = Math.min(cur.p.length, cur.sent + 800);
   }
@@ -789,7 +790,7 @@
   }
   function cancelStroke() {
     if (!cur) return;
-    send({ t: 'cancel', sid: cur.sid });
+    if (cur.sent) send({ t: 'cancel', sid: cur.sid });
     cur = null; dirty = true;
   }
 
@@ -853,7 +854,9 @@
     if (!gesture) return;
     if (gesture.type === 'draw') { finishStroke(); gesture = null; }
     else if (gesture.type === 'pan') { gesture = null; cv.classList.remove('grabbing'); }
+    else if (gesture.type === 'pinch' && pts.size === 1) { const [r] = [...pts.values()]; gesture = { type: 'pan', lx: r.x, ly: r.y }; }
     else if (pts.size < 2) gesture = pts.size ? { type: 'wait' } : null;
+    if (!pts.size && gesture && gesture.type === 'pan') { gesture = null; cv.classList.remove('grabbing'); }
   }
   cv.addEventListener('pointerup', up);
   cv.addEventListener('pointercancel', up);
@@ -1053,9 +1056,10 @@
   resize();
   connect();
   requestAnimationFrame(loop);
-  if (!store.get('wc.seen')) {
-    store.set('wc.seen', '1');
-    setTimeout(() => toast('拖动就能画 · 双指或按住空格移动 · 捏合或滚轮缩放', 6000), 600);
+  const touchy = matchMedia('(pointer: coarse)').matches;
+  if (touchy ? !store.get('wc.seen.touch') : !store.get('wc.seen')) {
+    store.set('wc.seen', '1'); store.set('wc.seen.touch', '1');
+    setTimeout(() => toast(touchy ? '一根手指画画 · 两根手指移动和缩放' : '拖动就能画 · 按住空格拖动移动 · 滚轮缩放', 7000), 600);
   }
 })();
 </script>
