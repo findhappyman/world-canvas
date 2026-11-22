@@ -94,9 +94,19 @@
   #aiGo { padding: 8px 14px; border-radius: 10px; background: var(--ink); color: #fff; font-weight: 600; flex: none; }
   #aiGo:disabled { opacity: .5; cursor: default; }
   #tAI[hidden] { display: none; }
-  #tAI { font-size: 13px; font-weight: 700; width: auto; padding: 0 10px; gap: 4px; grid-auto-flow: column; }
-  #btnAgent { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
-  #btnAgent:hover { color: var(--ink); }
+  #tAI { font-size: 13px; font-weight: 700; width: auto; padding: 0 12px 0 10px; gap: 4px; grid-auto-flow: column; color: #fff;
+    background: linear-gradient(135deg, #7b61ff, #e5559b); box-shadow: 0 2px 10px rgba(123,97,255,.35); margin-right: 2px; }
+  #tAI:hover { filter: brightness(1.06); background: linear-gradient(135deg, #7b61ff, #e5559b); }
+  #tAI[aria-pressed="true"] { background: linear-gradient(135deg, #5a3fe0, #c93d80); box-shadow: 0 0 0 2px #fff, 0 0 0 4px #7b61ff; }
+  #btnMore { padding: 9px 12px; font-weight: 700; letter-spacing: .08em; }
+  #more { position: fixed; z-index: 4; padding: 6px; display: flex; flex-direction: column; min-width: 190px; }
+  #more[hidden] { display: none; }
+  #more button { text-align: left; padding: 10px 12px; border-radius: 9px; font-size: 13px; white-space: nowrap; }
+  #more button:hover { background: rgba(0,0,0,.05); }
+  #more button small { display: block; color: var(--muted); font-size: 11px; margin-top: 1px; }
+  #flagOn { position: fixed; left: 50%; top: max(12px, env(safe-area-inset-top)); transform: translateX(-50%); z-index: 3;
+    padding: 8px 14px; font-size: 13px; font-weight: 600; background: #fff1f1; border-color: #f3c4c5; color: #b4282d; white-space: nowrap; }
+  #flagOn[hidden] { display: none; }
   #agent { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(480px, calc(100vw - 24px));
     max-height: calc(100vh - 40px); overflow-y: auto; padding: 18px; user-select: text; -webkit-user-select: text; z-index: 5; }
   #agent[hidden] { display: none; }
@@ -125,14 +135,23 @@
     #bar { flex-wrap: wrap; justify-content: center; row-gap: 2px; width: calc(100vw - 24px); }
     #colors { order: -1; flex: 1 0 100%; justify-content: center; }
     #bar > .sep:first-of-type { display: none; }
-    /* 顶部按钮多了，手机上放到左上角卡片下面单独一行，放不下就横向滑动 */
-    #nav { top: calc(max(12px, env(safe-area-inset-top)) + 114px); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right));
-      max-width: none; justify-content: flex-start; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 2px; }
+    /* 手机上左上角只留一行：名字；坐标藏起来，Agent 入口在「···」里 */
+    #brand { display: flex; align-items: center; gap: 10px; padding: 8px 12px; }
+    #brand .sub { display: none; }
+    #me { margin-top: 0; }
+    /* 「···」和名字同一行，放右上角 */
+    #btnMore { position: fixed; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); padding: 8px 12px; }
+    /* 导航按钮放在名字下面一行，放不下就横向滑动；留出上下边距，免得阴影被裁成一条底色 */
+    #nav { top: calc(max(12px, env(safe-area-inset-top)) + 38px); left: 0; right: 0; max-width: none; justify-content: flex-start;
+      flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 6px max(12px, env(safe-area-inset-right)) 12px max(12px, env(safe-area-inset-left)); gap: 6px; }
     #nav::-webkit-scrollbar { display: none; }
-    #nav button { flex: none; }
-    #mod { top: calc(max(12px, env(safe-area-inset-top)) + 160px); max-height: calc(100vh - 300px); }
+    #nav { pointer-events: none; }
+    #nav button { flex: none; padding: 8px 12px; pointer-events: auto; }
+    #nav .card { box-shadow: 0 2px 8px rgba(30,25,15,.08), 0 1px 2px rgba(30,25,15,.06); }
+    #flagOn { top: calc(max(12px, env(safe-area-inset-top)) + 96px); }
+    #mod { top: calc(max(12px, env(safe-area-inset-top)) + 96px); max-height: calc(100vh - 240px); }
     #bar { gap: 2px; padding: 6px; }
-    #tAI { width: 38px; padding: 0; } #tAI span { display: none; }
+    #tAI { padding: 0 10px 0 8px; }
     .sz { width: 26px; }
     #ai { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 100px); }
     #toast { bottom: 128px; }
@@ -146,7 +165,6 @@
   <h1>无界画布</h1>
   <div class="sub" id="pos">x 0 · y 0 · 100%</div>
   <button id="me" title="点击改名"><i></i>你是 <b id="myname"></b></button>
-  <button id="btnAgent" title="让你自己的 AI 助手（Claude、ChatGPT 等）来画布上画画">🤖 接入我的 Agent</button>
 </div>
 
 <div id="nav">
@@ -156,7 +174,14 @@
   <button id="btnEmpty" class="card" title="找一块没人画过的地方">找空地</button>
   <button id="btnShare" class="card" title="复制当前位置的链接">分享<span class="l">位置</span></button>
   <button id="btnMod" class="card" hidden title="查看被处罚的人，恢复误伤">管理</button>
+  <button id="btnMore" class="card" title="更多" aria-label="更多" aria-haspopup="true" aria-expanded="false">···</button>
 </div>
+
+<div id="more" class="card" hidden role="menu">
+  <button id="btnAgent" role="menuitem">🤖 接入我的 Agent<small>让 Claude、ChatGPT 等 AI 助手来画</small></button>
+  <button id="btnFlag" role="menuitem">🚩 举报乱涂<small>点一下乱涂的笔画，把它藏起来</small></button>
+</div>
+<button id="flagOn" class="card" hidden>🚩 举报模式：点一下乱涂的笔画 · 点这里退出</button>
 
 <div id="zoom" class="card">
   <button id="zin" aria-label="放大">+</button>
@@ -164,17 +189,14 @@
 </div>
 
 <div id="bar" class="card">
+  <button class="tool" id="tAI" hidden aria-pressed="false" title="AI 画笔：说一句话，让 AI 帮你画" aria-label="AI 画笔">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg><span>AI</span>
+  </button>
   <button class="tool" id="tPen" aria-pressed="true" title="画笔 (B)" aria-label="画笔">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.6 7.6"/><circle cx="11" cy="11" r="2"/></svg>
   </button>
   <button class="tool" id="tHand" aria-pressed="false" title="移动 (H 或按住空格)" aria-label="移动">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.3l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"/></svg>
-  </button>
-  <button class="tool" id="tFlag" aria-pressed="false" title="举报：点一下乱涂的笔画" aria-label="举报">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/></svg>
-  </button>
-  <button class="tool" id="tAI" hidden aria-pressed="false" title="AI 画笔：说一句话，让 AI 帮你画" aria-label="AI 画笔">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg><span>AI</span>
   </button>
   <div class="sep"></div>
   <div id="colors"></div>
@@ -455,7 +477,7 @@
           break;
         }
         case 'ghost': ghosts = m.s; dirty = true; if (!m.s.length) toast('这个人没有被隐藏的笔画'); break;
-        case 'admin': isAdmin = m.ok; if (m.ai) $('tAI').hidden = false; $('btnMod').hidden = !m.ok; toast(m.ok ? '管理员模式已开启：用举报工具点笔画即可处理' : '管理员口令不对'); break;
+        case 'admin': isAdmin = m.ok; if (m.ai) $('tAI').hidden = false; $('btnMod').hidden = !m.ok; toast(m.ok ? '管理员模式已开启：用「···」里的举报点笔画即可处理' : '管理员口令不对'); break;
         case 'del': {
           removeStroke(m.id);
           for (let i = myStack.length - 1; i >= 0; i--) {
@@ -851,7 +873,7 @@
     tool = t;
     $('tPen').setAttribute('aria-pressed', t === 'pen');
     $('tHand').setAttribute('aria-pressed', t === 'hand');
-    $('tFlag').setAttribute('aria-pressed', t === 'flag');
+    $('flagOn').hidden = t !== 'flag';
     cv.classList.toggle('hand', t === 'hand' || space);
     cv.classList.toggle('flag', t === 'flag');
   }
@@ -890,7 +912,18 @@
   });
   $('tPen').onclick = () => setTool('pen');
   $('tHand').onclick = () => setTool('hand');
-  $('tFlag').onclick = () => { setTool('flag'); toast('点一下乱涂的笔画来举报'); };
+  $('flagOn').onclick = () => setTool('pen');
+  const more = $('more');
+  function moreOpen(open) {
+    more.hidden = !open; $('btnMore').setAttribute('aria-expanded', open);
+    if (open) {
+      const r = $('btnMore').getBoundingClientRect();
+      more.style.top = (r.bottom + 8) + 'px'; more.style.right = Math.max(12, innerWidth - r.right) + 'px';
+    }
+  }
+  $('btnMore').onclick = (e) => { e.stopPropagation(); moreOpen(more.hidden); };
+  addEventListener('pointerdown', (e) => { if (!more.hidden && !more.contains(e.target) && e.target !== $('btnMore')) moreOpen(false); }, true);
+  $('btnFlag').onclick = () => { moreOpen(false); setTool('flag'); };
   $('tUndo').onclick = undo;
   $('zin').onclick = () => zoomAt(W / 2, H / 2, 1.4);
   $('zout').onclick = () => zoomAt(W / 2, H / 2, 1 / 1.4);
@@ -1007,7 +1040,7 @@
     a.append(b); $('agBody').append(a);
   }
   $('agGen').onclick = () => send({ t: 'agentkey' });
-  $('btnAgent').onclick = () => { $('agName').textContent = myName; $('agent').hidden = false; };
+  $('btnAgent').onclick = () => { moreOpen(false); $('agName').textContent = myName; $('agent').hidden = false; };
   $('agClose').onclick = () => { $('agent').hidden = true; };
   $('agOff').onclick = () => { if (confirm('停用后，你的 Agent 就不能再来画了。之前的地址全部失效。确定吗？')) send({ t: 'agentrevoke' }); };
 
