@@ -34,6 +34,9 @@
     display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 60vw; }
   #nav button { padding: 9px 13px; font-size: 13px; font-weight: 550; white-space: nowrap; }
   #nav button:hover { background: #fff; }
+  #nav b.echo { display: inline-block; min-width: 17px; height: 17px; margin-left: 5px; padding: 0 5px; border-radius: 9px;
+    background: #e5484d; color: #fff; font-size: 11px; line-height: 17px; text-align: center; vertical-align: 1px; }
+  #nav b.echo[hidden] { display: none; }
   #online .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #30a46c; margin-right: 6px;
     box-shadow: 0 0 0 3px rgba(48,164,108,.18); }
   #online.off .dot { background: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,.18); }
@@ -148,7 +151,7 @@
 
 <div id="nav">
   <button id="online" class="card off" title="飞到一位在线的人身边"><span class="dot"></span><span id="count">连接中…</span></button>
-  <button id="btnMine" class="card" title="回到我画过的地方，再点一次看上一幅 (M)">我的画</button>
+  <button id="btnMine" class="card" title="回到我画过的地方，再点一次看上一幅 (M)">我的画<b class="echo" id="echoN" hidden></b></button>
   <button id="btnRandom" class="card" title="随机飞到别人的一幅作品 (R)"><span class="l">随便</span>逛逛</button>
   <button id="btnEmpty" class="card" title="找一块没人画过的地方">找空地</button>
   <button id="btnShare" class="card" title="复制当前位置的链接">分享<span class="l">位置</span></button>
@@ -397,6 +400,10 @@
       switch (m.t) {
         case 'welcome': if (adminKey) send({ t: 'admin', key: adminKey }); me.id = m.id; me.h = m.h; $('me').querySelector('i').style.background = m.h; setCount(m.n); $('tAI').hidden = !m.ai;
           if (needEntry) send({ t: 'empty', entry: true });
+          send({ t: 'echo', since: Number(store.get('wc_echo_seen')) || 0 });
+          break;
+        case 'echo':
+          echoes = m.list; echoMax = Math.max(0, ...m.list.map((e) => e.ts)); showEcho();
           break;
         case 'n': setCount(m.n); break;
         case 'strokes': for (const s of m.s) addStroke(s); break;
@@ -890,7 +897,25 @@
   $('online').onclick = () => send({ t: 'who' });
   $('btnEmpty').onclick = () => { needEntry = false; send({ t: 'empty', x: view.x, y: view.y }); };
   let mineIdx = -1, mineSig = '';
-  $('btnMine').onclick = () => { needEntry = false; send({ t: 'mine' }); };
+  // 回音：别人在我的画旁边新添的笔画。有回音时「我的画」先带你去看回音，看完再回到平常的翻看
+  let echoes = [], echoMax = 0;
+  function showEcho() {
+    const n = echoes.reduce((a, e) => a + e.people, 0);
+    $('echoN').hidden = !n; $('echoN').textContent = n > 99 ? '99+' : n;
+    $('btnMine').title = n ? '有人在你的画旁边添了东西，点一下去看 (M)' : '回到我画过的地方，再点一次看上一幅 (M)';
+  }
+  $('btnMine').onclick = () => {
+    needEntry = false;
+    const e = echoes.shift();
+    if (!e) { send({ t: 'mine' }); return; }
+    flyTo(e.x, e.y, clamp(Math.min(W, H) * 0.7 / e.span, MINZ, 2));
+    const who = e.people > 1 ? `${e.people} 个人` : '有人';
+    toast(`${who}在你的画旁边添了 ${e.n} 笔 · ${ago(Date.now() - e.ts)}${echoes.length ? `，还有 ${echoes.length} 处` : ''}`, 4000);
+    if (!echoes.length) store.set('wc_echo_seen', String(echoMax));
+    showEcho();
+  };
+  // 一直开着页面也能收到新回音（正在看回音时不刷新，免得列表被打乱）
+  setInterval(() => { if (!echoes.length && ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'echo', since: Number(store.get('wc_echo_seen')) || 0 })); }, 5 * 60000);
   const seenWorks = []; // 最近看过的作品，随便逛逛时尽量不重复
   $('btnRandom').onclick = () => { needEntry = false; send({ t: 'random', skip: seenWorks }); };
   $('btnShare').onclick = async () => {

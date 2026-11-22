@@ -21,6 +21,7 @@ const DAY = 86_400_000;
 const REPORTS_PER_HOUR = 10;
 // 新人保护期：刚来的人这段时间里不能把笔画大面积压在别人的画上（画在旁边、添一小笔都可以）
 const NEW_MS = 5 * 60_000;
+const ECHO_PAD = 400;          // 离我的画多近的新笔画算「回音」
 const PAIR_MS = 30 * 60_000;  // 在场的人这么久之内画的笔，新人可以叠着画（合画）
 const CELL = 16;             // 判断重叠用的网格边长（世界单位）
 const OVER_RATIO = 0.3;      // 一笔里超过这个比例压在别人画上……
@@ -361,6 +362,11 @@ export class World extends DurableObject {
         ws.send(JSON.stringify({ t: "who", list }));
         break;
       }
+      case "echo": {
+        const since = Number.isFinite(m.since) ? m.since : 0;
+        ws.send(JSON.stringify({ t: "echo", list: me.uid ? this.echoes(me.uid, since) : [] }));
+        break;
+      }
       case "mine": {
         ws.send(JSON.stringify({ t: "mine", list: me.uid ? this.myWorks(me.uid) : [] }));
         break;
@@ -583,7 +589,7 @@ export class World extends DurableObject {
   }
 
   // 我自己的作品，最近的在前：按区块汇总后把挨在一起的合并成一幅
-  myWorks(uid) {
+  workBoxes(uid) {
     const rows = this.sql.exec("SELECT cx, cy FROM works WHERE owner = ? ORDER BY id DESC LIMIT 200", uid).toArray();
     const parts = [];
     for (const w of rows) {
@@ -591,11 +597,11 @@ export class World extends DurableObject {
         SELECT s.id, s.x0, s.y0, s.x1, s.y1, s.ts, s.ai FROM chunks k JOIN strokes s ON s.id = k.sid
         WHERE k.cx = ? AND k.cy = ? AND s.owner = ? AND s.hidden = 0 LIMIT 2000`, w.cx, w.cy, uid).toArray();
       if (!rs.length) continue;
-      const p = { ids: new Set(), b: [Infinity, Infinity, -Infinity, -Infinity], ts: 0, ai: 0 };
+      const p = { ids: new Set(), b: [Infinity, Infinity, -Infinity, -Infinity], ts: 0, first: Infinity, ai: 0 };
       for (const r of rs) {
         p.ids.add(r.id);
         p.b = [Math.min(p.b[0], r.x0), Math.min(p.b[1], r.y0), Math.max(p.b[2], r.x1), Math.max(p.b[3], r.y1)];
-        p.ts = Math.max(p.ts, r.ts); p.ai = Math.max(p.ai, r.ai);
+        p.ts = Math.max(p.ts, r.ts); p.first = Math.min(p.first, r.ts ?? 0); p.ai = Math.max(p.ai, r.ai);
       }
       parts.push(p);
     }
@@ -607,14 +613,45 @@ export class World extends DurableObject {
       if (w) {
         w.b = [Math.min(w.b[0], p.b[0]), Math.min(w.b[1], p.b[1]), Math.max(w.b[2], p.b[2]), Math.max(w.b[3], p.b[3])];
         for (const id of p.ids) w.ids.add(id); // 一笔跨区块时会在两个区块里各出现一次，按 id 去重
-        w.ts = Math.max(w.ts, p.ts); w.ai = Math.max(w.ai, p.ai);
+        w.ts = Math.max(w.ts, p.ts); w.first = Math.min(w.first, p.first); w.ai = Math.max(w.ai, p.ai);
       } else works.push({ ...p, ids: new Set(p.ids) });
     }
     works.sort((a, b) => b.ts - a.ts);
-    return works.slice(0, 30).map((w) => ({
+    return works.slice(0, 30);
+  }
+
+  myWorks(uid) {
+    return this.workBoxes(uid).map((w) => ({
       x: (w.b[0] + w.b[2]) / 2, y: (w.b[1] + w.b[3]) / 2, span: Math.max(w.b[2] - w.b[0], w.b[3] - w.b[1], 200),
       n: w.ids.size, ts: w.ts, by: w.ai === 2 ? "agent" : w.ai === 1 ? "ai" : "human",
     }));
+  }
+
+  // 回音：我画完之后，别人在我的画旁边（ECHO_PAD 以内）新添的笔画，按作品汇总
+  echoes(uid, since) {
+    const out = [];
+    for (const w of this.workBoxes(uid)) {
+      const after = Math.max(since, w.first);
+      const q = [w.b[0] - ECHO_PAD, w.b[1] - ECHO_PAD, w.b[2] + ECHO_PAD, w.b[3] + ECHO_PAD];
+      const rs = this.sql.exec(`
+        SELECT DISTINCT s.id, s.owner, s.x0, s.y0, s.x1, s.y1, s.ts FROM chunks k JOIN strokes s ON s.id = k.sid
+        WHERE k.cx BETWEEN ? AND ? AND k.cy BETWEEN ? AND ?
+          AND s.owner != ? AND s.hidden = 0 AND s.ts > ?
+          AND s.x1 >= ? AND s.x0 <= ? AND s.y1 >= ? AND s.y0 <= ?
+        LIMIT 2000`,
+        Math.floor(q[0] / CHUNK), Math.floor(q[2] / CHUNK), Math.floor(q[1] / CHUNK), Math.floor(q[3] / CHUNK),
+        uid, after, q[0], q[2], q[1], q[3]).toArray();
+      if (!rs.length) continue;
+      const people = new Set(), b = [...w.b];
+      let ts = 0;
+      for (const r of rs) {
+        people.add(r.owner);
+        b[0] = Math.min(b[0], r.x0); b[1] = Math.min(b[1], r.y0); b[2] = Math.max(b[2], r.x1); b[3] = Math.max(b[3], r.y1);
+        ts = Math.max(ts, r.ts);
+      }
+      out.push({ x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, span: Math.max(b[2] - b[0], b[3] - b[1], 200), people: people.size, n: rs.length, ts });
+    }
+    return out.sort((a, b) => b.ts - a.ts).slice(0, 20);
   }
 
   // 随机挑一幅别人的作品：从作品索引里均匀抽一行，再把同一作者在附近 3×3 区块里的笔画合成一幅
