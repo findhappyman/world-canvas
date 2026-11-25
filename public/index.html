@@ -40,6 +40,9 @@
   #online .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #30a46c; margin-right: 6px;
     box-shadow: 0 0 0 3px rgba(48,164,108,.18); }
   #online.off .dot { background: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,.18); }
+  #online .go { color: #30a46c; margin-left: 4px; }
+  #online.busy .dot { animation: busy 1s ease-in-out infinite; }
+  @keyframes busy { 0%, 100% { box-shadow: 0 0 0 3px rgba(48,164,108,.18); } 50% { box-shadow: 0 0 0 7px rgba(48,164,108,.32); transform: scale(1.2); } }
 
   #zoom { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom));
     display: flex; flex-direction: column; overflow: hidden; }
@@ -506,10 +509,19 @@
           dirty = true; break;
         case 'who': {
           if (!m.list.length) { toast('现在只有你一个人，把链接分享给朋友吧'); break; }
+          // 隔一会儿再点就从最近在画的人开始；连点就依次换人
+          if (performance.now() - whoAt > 15000) whoIdx = -1;
+          whoAt = performance.now();
           whoIdx = (whoIdx + 1) % m.list.length;
           const p = m.list[whoIdx];
           flyTo(p.x, p.y, Math.max(view.z, 0.6));
-          toast(`飞到 ${p.n} 身边`);
+          toast(p.a >= 0 && p.a < 20000 ? `飞到 ${p.n} 身边，ta 正在画` : `飞到 ${p.n} 身边`);
+          break;
+        }
+        case 'busy': {
+          if (m.id === me.id) break;
+          $('online').classList.add('busy');
+          clearTimeout(busyTimer); busyTimer = setTimeout(() => $('online').classList.remove('busy'), 8000);
           break;
         }
         case 'mine': {
@@ -543,7 +555,7 @@
       }
     };
   }
-  let whoIdx = -1, isAdmin = false, adminKey = null;
+  let whoIdx = -1, whoAt = 0, busyTimer = 0, isAdmin = false, adminKey = null;
   if (new URLSearchParams(location.search).has('admin')) {
     try { adminKey = sessionStorage.getItem('wc.admin'); } catch {}
     if (!adminKey) { adminKey = prompt('管理员口令') || null; try { if (adminKey) sessionStorage.setItem('wc.admin', adminKey); } catch {} }
@@ -646,7 +658,19 @@
     }
     if (confirm('举报这一笔是恶意乱涂？\n多人举报后，这位作者近期的画会被隐藏。')) send({ t: 'report', id: s.id });
   }
-  function setCount(n) { $('count').textContent = n + ' 人在线'; }
+  function setCount(n) {
+    $('count').innerHTML = n > 1 ? `${n} 人在线<span class="go">· 去看看</span>` : '1 人在线';
+    $('online').title = n > 1 ? '飞到一位在线的人身边，正在画的人优先' : '现在只有你一个人';
+  }
+  // 心跳：页面在前台时每 25 秒报一次平安；切到后台就停，服务器 75 秒后不再算你在线
+  // "ping" 由服务器自动回，不占资源；每隔一次再要一下最新人数
+  let hbN = 0;
+  setInterval(() => {
+    if (document.hidden || !ws || ws.readyState !== 1) return;
+    ws.send('ping');
+    if (++hbN % 2 === 0) send({ t: 'hb' });
+  }, 25000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) send({ t: 'hb' }); });
 
   // ---------- 绘制 ----------
   function path(p, w, c) {

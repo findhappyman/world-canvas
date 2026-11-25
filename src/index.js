@@ -12,6 +12,8 @@ const MAX_MSG = 200_000;
 // ---- 防破坏参数 ----
 const MAX_W = 66;            // 最粗笔画（世界单位）≈ 最粗画笔在 25% 缩放下的宽度；再缩小就不能画
 const MAX_CONN_PER_IP = 8;
+const ALIVE_MS = 75_000;     // 75 秒没心跳就不算在线（手机切到后台、锁屏后连接常常不会断开）
+const STALE_MS = 10 * 60_000; // 10 分钟没动静的连接直接关掉
 const MSG_PER_SEC = 150;     // 单连接每秒消息上限
 const INK_CAP = 1_500_000;   // 墨水桶容量（长度×粗细，世界单位²）
 const INK_RATE = 30_000;     // 每秒回墨
@@ -132,6 +134,12 @@ export class World extends DurableObject {
     this.given = new Map(); // "cx,cy" -> 发放时间，刚分给别人的空地先别再给
     // 休眠唤醒后从附件恢复连接状态
     this.meta = new Map();
+    // 最近一次收到消息的时间，只在内存里；休眠唤醒后丢失，所以还要看自动回复的 ping 时间
+    this.seen = new Map();
+    this.busyAt = 0;
+    // 客户端每 25 秒发一个 "ping"，由运行时直接回 "pong"，不唤醒对象，但会记下时间
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    this.wokeAt = Date.now();
     for (const ws of ctx.getWebSockets()) {
       const m = ws.deserializeAttachment();
       if (m) this.meta.set(ws, m);
@@ -163,7 +171,30 @@ export class World extends DurableObject {
     };
     ws.serializeAttachment(m);
     this.meta.set(ws, m);
+    this.seen.set(ws, Date.now());
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  lastSeen(ws) {
+    let t = this.seen.get(ws) ?? 0;
+    try { const p = this.ctx.getWebSocketAutoResponseTimestamp(ws); if (p) t = Math.max(t, p.getTime()); } catch {}
+    return t;
+  }
+  alive(ws, now) { return now - this.lastSeen(ws) <= ALIVE_MS; }
+
+  // 在线人数：同一个人开多个标签页只算一次，没心跳的不算
+  online() {
+    const now = Date.now(), set = new Set();
+    for (const [ws, m] of this.meta) if (m.n && this.alive(ws, now)) set.add(m.uid || m.iph);
+    return set.size;
+  }
+
+  // 有人正在画：告诉所有人，让在线人数那里的绿点闪一下（全站最多 4 秒一次）
+  busy(id) {
+    const now = Date.now();
+    if (now - this.busyAt < 4000) return;
+    this.busyAt = now;
+    this.all(JSON.stringify({ t: "busy", id }));
   }
 
   // 只发给视野与 box 相交的连接
@@ -196,6 +227,7 @@ export class World extends DurableObject {
     let f = this.flood.get(ws);
     if (!f || now - f.t > 1000) this.flood.set(ws, (f = { t: now, c: 0 }));
     if (++f.c > MSG_PER_SEC) return;
+    this.seen.set(ws, now);
 
     switch (m.t) {
       case "hello": {
@@ -203,8 +235,18 @@ export class World extends DurableObject {
         me.n = String(m.name ?? "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 16) || "旅人";
         ws.serializeAttachment(me);
         const fresh = Math.max(0, (me.first ?? 0) + NEW_MS - now);
-        ws.send(JSON.stringify({ t: "welcome", id: me.id, h: me.h, n: this.meta.size, fresh, ai: this.aiOn() }));
-        this.all(JSON.stringify({ t: "n", n: this.meta.size }));
+        const n = this.online();
+        ws.send(JSON.stringify({ t: "welcome", id: me.id, h: me.h, n, fresh, ai: this.aiOn() }));
+        this.all(JSON.stringify({ t: "n", n }));
+        break;
+      }
+      case "hb": {
+        // 心跳：顺便清掉早就断了的连接，再把最新人数告诉对方
+        for (const [o] of this.meta) {
+          // 刚唤醒时内存里的记录是空的，至少等满 STALE_MS 再判断，免得误关还开着的旧页面
+          if (now - this.wokeAt > STALE_MS && now - this.lastSeen(o) > STALE_MS) { try { o.close(1000, "idle"); } catch {} this.bye(o); }
+        }
+        ws.send(JSON.stringify({ t: "n", n: this.online() }));
         break;
       }
       case "view": {
@@ -232,6 +274,8 @@ export class World extends DurableObject {
         if (!p || w === null || !COLOR.test(m.c) || !this.sidOk(m.sid)) return;
         if (me.ban > now) return;
         this.relay(JSON.stringify({ t: "draw", from: me.id, sid: m.sid, c: m.c, w, p }), bbox(p, w), ws);
+        me.drew = now; me.x = p[p.length - 2]; me.y = p[p.length - 1]; me.pos = true;
+        this.busy(me.id);
         break;
       }
       case "cancel": {
@@ -355,10 +399,12 @@ export class World extends DurableObject {
       case "who": {
         const list = [];
         for (const [o, om] of this.meta) {
-          if (o === ws || !om.pos) continue;
-          list.push({ id: om.id, n: om.n, h: om.h, x: om.x, y: om.y });
-          if (list.length >= 50) break;
+          if (o === ws || !om.pos || !this.alive(o, now)) continue;
+          if (me.uid && om.uid === me.uid) continue; // 自己的其他标签页
+          list.push({ id: om.id, n: om.n, h: om.h, x: om.x, y: om.y, d: om.drew || 0, a: om.drew ? now - om.drew : -1 });
         }
+        list.sort((a, b) => b.d - a.d); // 正在画的人排前面
+        list.length = Math.min(list.length, 50);
         ws.send(JSON.stringify({ t: "who", list }));
         break;
       }
@@ -733,6 +779,8 @@ export class World extends DurableObject {
     const area = [x, y, x + sz, y + sz];
     const frame = (on) => this.relay(JSON.stringify({ t: "aibox", g, from: me.id, on, x, y, s: sz, n: me.n, h: me.h, q: on ? q : undefined }), area, null, ws);
     frame(true);
+    me.drew = now; me.x = x + sz / 2; me.y = y + sz / 2; me.pos = true;
+    this.busy(me.id);
     let k = 0;
     try {
       const res = await generate(this.env, q, (st) => {
@@ -840,8 +888,9 @@ export class World extends DurableObject {
     const m = this.meta.get(ws);
     if (!m) return;
     this.meta.delete(ws);
+    this.seen.delete(ws);
     this.all(JSON.stringify({ t: "leave", id: m.id }));
-    this.all(JSON.stringify({ t: "n", n: this.meta.size }));
+    this.all(JSON.stringify({ t: "n", n: this.online() }));
   }
 
   webSocketClose(ws, code) {
