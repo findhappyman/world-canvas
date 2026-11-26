@@ -84,6 +84,34 @@
   #modList button { padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); background: #fff; flex: none; }
   #modList button.go { background: var(--ink); color: #fff; border-color: var(--ink); }
   #modList .empty { padding: 22px 14px; color: var(--muted); text-align: center; }
+  #watch { position: fixed; right: max(12px, env(safe-area-inset-right)); top: 64px; width: min(340px, calc(100vw - 24px));
+    max-height: calc(100vh - 160px); display: flex; flex-direction: column; overflow: hidden; z-index: 3; }
+  #watch[hidden] { display: none; }
+  #watch header { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  #watch header b { font-size: 14px; }
+  #waClose { width: 28px; height: 28px; border-radius: 8px; color: var(--muted); }
+  #waClose:hover { background: rgba(0,0,0,.05); }
+  #waNow { padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  #waNow .st { font-weight: 600; display: flex; align-items: center; gap: 7px; }
+  #waNow .st i { width: 8px; height: 8px; border-radius: 50%; background: #c9c4b8; flex: none; }
+  #waNow .st i.live { background: #7b61ff; animation: think 1.2s infinite; }
+  @keyframes think { 0%, 100% { box-shadow: 0 0 0 3px rgba(123,97,255,.15); } 50% { box-shadow: 0 0 0 6px rgba(123,97,255,.3); } }
+  #waNow .th { margin-top: 8px; line-height: 1.55; }
+  #waNow .see { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  #waNow .acts { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  #waNow .acts:empty { display: none; }
+  #watch button.b { padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); background: #fff; flex: none; }
+  #watch button.b.go { background: var(--ink); color: #fff; border-color: var(--ink); }
+  #watch button.b.on { background: #efeafe; border-color: #7b61ff; color: #5a3fe0; }
+  #waToday { padding: 8px 14px 0; color: var(--muted); font-size: 12px; }
+  #waList { overflow-y: auto; }
+  #waList .row { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: flex-start; }
+  #waList .row:last-child { border-bottom: 0; }
+  #waList .info { flex: 1; min-width: 0; font-size: 13px; }
+  #waList .info b { font-weight: 600; }
+  #waList .info div { color: var(--muted); font-size: 12px; margin-top: 3px; line-height: 1.5; }
+  #waList .info div.th { color: var(--ink); }
+  #waList .empty { padding: 22px 14px; color: var(--muted); text-align: center; font-size: 13px; }
   #ai { position: fixed; left: 50%; bottom: calc(max(16px, env(safe-area-inset-bottom)) + 62px); transform: translateX(-50%);
     width: min(420px, calc(100vw - 24px)); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
   #ai[hidden] { display: none; }
@@ -153,6 +181,7 @@
     #nav .card { box-shadow: 0 2px 8px rgba(30,25,15,.08), 0 1px 2px rgba(30,25,15,.06); }
     #flagOn { top: calc(max(12px, env(safe-area-inset-top)) + 96px); }
     #mod { top: calc(max(12px, env(safe-area-inset-top)) + 96px); max-height: calc(100vh - 240px); }
+    #watch { top: calc(max(12px, env(safe-area-inset-top)) + 96px); max-height: 46vh; }
     #bar { gap: 2px; padding: 6px; }
     #tAI { padding: 0 10px 0 8px; }
     .sz { width: 26px; }
@@ -181,6 +210,7 @@
 </div>
 
 <div id="more" class="card" hidden role="menu">
+  <button id="btnWander" role="menuitem" hidden>🎨 AI 画家小游<small>看它自己在画布上逛、想、画</small></button>
   <button id="btnAgent" role="menuitem">🤖 接入我的 Agent<small>让 Claude、ChatGPT 等 AI 助手来画</small></button>
   <button id="btnFlag" role="menuitem">🚩 举报乱涂<small>点一下乱涂的笔画，把它藏起来</small></button>
 </div>
@@ -214,6 +244,13 @@
 <div id="mod" class="card" hidden>
   <header><div id="modTabs"><button data-tab="recent" class="on">最近新增</button><button data-tab="mod">被处罚的人</button></div><button id="modClose" aria-label="关闭">✕</button></header>
   <div id="modList"></div>
+</div>
+
+<div id="watch" class="card" hidden>
+  <header><b>🎨 <span id="waName">小游（AI）</span></b><button id="waClose" aria-label="关闭">✕</button></header>
+  <div id="waNow"></div>
+  <div id="waToday"></div>
+  <div id="waList"></div>
 </div>
 
 <div id="ai" class="card" hidden>
@@ -423,7 +460,7 @@
     ws.onmessage = (e) => {
       let m; try { m = JSON.parse(e.data); } catch { return; }
       switch (m.t) {
-        case 'welcome': if (adminKey) send({ t: 'admin', key: adminKey }); me.id = m.id; me.h = m.h; $('me').querySelector('i').style.background = m.h; setCount(m.n); $('tAI').hidden = !m.ai;
+        case 'welcome': if (adminKey) send({ t: 'admin', key: adminKey }); me.id = m.id; me.h = m.h; $('me').querySelector('i').style.background = m.h; setCount(m.n); $('tAI').hidden = !m.ai; if (!isAdmin) $('btnWander').hidden = !m.wa;
           if (needEntry) send({ t: 'empty', entry: true });
           send({ t: 'echo', since: Number(store.get('wc_echo_seen')) || 0 });
           break;
@@ -460,10 +497,17 @@
         case 'recent': if (modTab === 'recent') renderRecent(m); break;
         case 'aibox':
           if (m.from === me.id) break;
-          if (m.on) frames.set(m.g, { x: m.x, y: m.y, s: m.s, who: m.n, q: m.q, h: m.h, t0: performance.now(), drawing: m.kind === 'agent', agent: m.kind === 'agent' });
+          if (m.on) frames.set(m.g, { x: m.x, y: m.y, s: m.s, who: m.n, q: m.q, h: m.h, t0: performance.now(), drawing: m.kind === 'agent', agent: m.kind === 'agent', wander: m.kind === 'wander' });
           else frames.delete(m.g);
           dirty = true; break;
         case 'agentkey': renderAgent(m); break;
+        case 'wst': {
+          const was = wa; wa = m.s;
+          if (follow) waFollow();
+          if (was && waLive(was) && !waLive(wa) && !$('watch').hidden) send({ t: 'wander' }); // 刚画完，刷新日记
+          renderWatch(); break;
+        }
+        case 'wlog': wa = m.s; waList = m.list; waToday = m.today; renderWatch(); break;
         case 'aidone':
           aiEnd();
           toast(m.n ? `画好了，共 ${m.n} 笔。不满意可以点撤销，整幅一起撤掉` : 'AI 这次没画出来，换个说法试试', 5000);
@@ -480,7 +524,7 @@
           break;
         }
         case 'ghost': ghosts = m.s; dirty = true; if (!m.s.length) toast('这个人没有被隐藏的笔画'); break;
-        case 'admin': isAdmin = m.ok; if (m.ai) $('tAI').hidden = false; $('btnMod').hidden = !m.ok; toast(m.ok ? '管理员模式已开启：用「···」里的举报点笔画即可处理' : '管理员口令不对'); break;
+        case 'admin': isAdmin = m.ok; if (m.ai) $('tAI').hidden = false; if (m.ok) $('btnWander').hidden = false; $('btnMod').hidden = !m.ok; toast(m.ok ? '管理员模式已开启：用「···」里的举报点笔画即可处理' : '管理员口令不对'); break;
         case 'del': {
           removeStroke(m.id);
           for (let i = myStack.length - 1; i >= 0; i--) {
@@ -753,7 +797,10 @@
     if (aiJob) { const [sx, sy] = w2s(aiJob.x, aiJob.y); box(sx, sy, aiJob.s * z, status(aiJob), '#8e4ec6'); }
     for (const f of frames.values()) {
       const [sx, sy] = w2s(f.x, f.y);
-      box(sx, sy, f.s * z, f.agent ? `${f.who} 正在画${f.q ? '：' + f.q : ''}` : f.who + ' 的 ' + status(f), f.h);
+      const lab = f.agent ? `${f.who} 正在画${f.q ? '：' + f.q : ''}`
+        : f.wander ? (f.drawing ? `${f.who} 正在画：${f.q}` : `${f.who} 想画「${f.q}」，正在构思… ${Math.floor((now - f.t0) / 1000)} 秒`)
+        : f.who + ' 的 ' + status(f);
+      box(sx, sy, f.s * z, lab, f.h);
     }
     if (aiJob || frames.size) dirty = true;
 
@@ -831,6 +878,7 @@
     try { cv.setPointerCapture(e.pointerId); } catch {}
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     fly = null;
+    if (follow) { follow = false; renderWatch(); } // 自己动了画布就不再跟着小游
     if (pts.size === 2) {
       cancelStroke();
       const [a, b] = [...pts.values()];
@@ -889,6 +937,7 @@
   cv.addEventListener('wheel', (e) => {
     e.preventDefault();
     fly = null;
+    if (follow) { follow = false; renderWatch(); }
     // 触控板：双指滚动=平移，捏合(ctrlKey)=缩放；鼠标滚轮=缩放
     const mouseWheel = e.deltaMode === 1 || (e.deltaX === 0 && Math.abs(e.deltaY) >= 100 && Number.isInteger(e.deltaY));
     if (e.ctrlKey || e.metaKey) zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01));
@@ -1067,6 +1116,79 @@
     a.append(b); $('agBody').append(a);
   }
   $('agGen').onclick = () => send({ t: 'agentkey' });
+  // ---------- AI 画家小游：看它在哪、在想什么、画过什么 ----------
+  let wa = null, waList = [], waToday = 0, follow = false, waTick = 0;
+  const waLive = (s) => !!s && s.st !== 'rest';
+  function waStatus(s) {
+    if (!s) return '连接中…';
+    const sec = Math.max(0, Math.floor((Date.now() - (s.t0 || Date.now())) / 1000));
+    if (s.st === 'walk') return s.kind === 'drift' ? '正在往空白的地方溜达…' : '正在去看一幅别人的画…';
+    if (s.st === 'think') return `在看周围，想想画什么… ${sec} 秒`;
+    if (s.st === 'draw') return `正在画「${s.title || '…'}」 · ${sec} 秒`;
+    if (!s.on) return '还没开工';
+    if (s.paused) return '暂停中';
+    const m = Math.round((s.next - Date.now()) / 60000);
+    return s.next > Date.now() ? (m >= 1 ? `在休息，大约 ${m} 分钟后再出门` : '马上就要出门了') : '在休息';
+  }
+  // 跟着它：走路时飞到目的地，画画时把画框放在屏幕中间
+  function waFollow() {
+    if (!waLive(wa)) return;
+    if (wa.box) flyTo(wa.box.x + wa.box.s / 2, wa.box.y + wa.box.s / 2, clamp(Math.min(W, H) * 0.6 / wa.box.s, MINZ, 2));
+    else if (wa.st === 'walk' && wa.to) flyTo(wa.to.x, wa.to.y, Math.max(view.z, 0.4));
+    else if (wa.x !== undefined) flyTo(wa.x, wa.y, Math.max(view.z, 0.4));
+  }
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+  const btn = (text, cls, fn) => { const b = el('button', 'b' + (cls ? ' ' + cls : ''), text); b.onclick = fn; return b; };
+  function renderWaNow() {
+    const s = wa || {}, live = waLive(s), now = $('waNow');
+    $('waName').textContent = s.n || '小游（AI）';
+    now.textContent = '';
+    const st = el('div', 'st'); st.append(el('i', live ? 'live' : ''), el('span', '', waStatus(wa)));
+    now.append(st);
+    if (live && s.see) now.append(el('div', 'see', '👀 ' + s.see));
+    if (live && s.thought) now.append(el('div', 'th', '💭 ' + s.thought));
+    if (!live) now.append(el('div', 'see', '它会自己挑地方：去看看别人刚画的画，在旁边的空白处添一幅；有时也去空地上随便画画。'));
+    const acts = el('div', 'acts');
+    if (live) {
+      acts.append(btn('飞过去看', 'go', () => { follow = false; waFollow(); renderWatch(); }));
+      acts.append(btn(follow ? '✓ 跟着它' : '跟着它', follow ? 'on' : '', () => { follow = !follow; if (follow) waFollow(); renderWatch(); }));
+    }
+    if (isAdmin) {
+      acts.append(btn('现在就出发', '', () => { send({ t: 'wander', op: 'now' }); toast('小游出门了'); }));
+      acts.append(btn(s.paused ? '继续' : '暂停', '', () => send({ t: 'wander', op: s.paused ? 'resume' : 'pause' })));
+    }
+    now.append(acts);
+  }
+  function renderWatch() {
+    if ($('watch').hidden) return;
+    renderWaNow();
+    $('waToday').textContent = waList.length ? `最近 24 小时画了 ${waToday} 幅 · 它的日记：` : '';
+    const box = $('waList');
+    box.textContent = '';
+    if (!waList.length) { box.append(el('div', 'empty', '还没有日记，等它第一次出门')); return; }
+    const fail = { think: '想了半天，没想好画什么', space: '附近没有空地', draw: '没画出来', undone: '这幅被撤掉了' };
+    for (const d of waList) {
+      const row = el('div', 'row'), info = el('div', 'info');
+      const ok = d.g && d.n && d.why !== 'undone';
+      info.append(el('b', '', ok ? `${d.title || '一幅画'} · ${d.n} 笔` : fail[d.why] || '这次没画成'));
+      if (d.thought) info.append(el('div', 'th', '💭 ' + d.thought));
+      if (d.see) info.append(el('div', '', '👀 ' + d.see));
+      info.append(el('div', '', `${ago(Date.now() - d.ts)} · ${d.kind === 'drift' ? '在空白处' : '在别人的画旁边'} · 用了 ${Math.round(d.ms / 1000)} 秒`));
+      row.append(info);
+      if (ok) {
+        row.append(btn('看看', '', () => { follow = false; ghosts = []; flyTo(d.x + d.s / 2, d.y + d.s / 2, clamp(Math.min(W, H) * 0.5 / Math.max(d.s * 2, 600), MINZ, 2)); }));
+        if (isAdmin) row.append(btn('撤掉', '', () => { if (confirm('撤掉小游画的这一幅？')) send({ t: 'wander', op: 'undo', g: d.g }); }));
+      }
+      box.append(row);
+    }
+  }
+  $('btnWander').onclick = () => {
+    moreOpen(false); $('mod').hidden = true; $('watch').hidden = false;
+    send({ t: 'wander' }); renderWatch();
+    clearInterval(waTick); waTick = setInterval(() => { if (waLive(wa)) renderWaNow(); }, 1000);
+  };
+  $('waClose').onclick = () => { $('watch').hidden = true; follow = false; clearInterval(waTick); };
+
   $('btnAgent').onclick = () => { moreOpen(false); $('agName').textContent = myName; $('agent').hidden = false; };
   $('agClose').onclick = () => { $('agent').hidden = true; };
   $('agOff').onclick = () => { if (confirm('停用后，你的 Agent 就不能再来画了。之前的地址全部失效。确定吗？')) send({ t: 'agentrevoke' }); };

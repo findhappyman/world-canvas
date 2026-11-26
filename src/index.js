@@ -3,6 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { generate } from "./ai.js";
 import { initAgentTables, issueKey, revokeKeys, handleAgentHttp } from "./agent.js";
+import { Wanderer } from "./wander.js";
 
 const CHUNK = 2048; // 世界单位；须与前端一致
 const COLOR = /^#[0-9a-f]{6}$/;
@@ -144,6 +145,13 @@ export class World extends DurableObject {
       const m = ws.deserializeAttachment();
       if (m) this.meta.set(ws, m);
     }
+    // 住在画布里的 AI 画家，靠 alarm 定时醒来
+    this.wander = new Wanderer(this);
+    ctx.blockConcurrencyWhile(() => this.wander.boot());
+  }
+
+  async alarm() {
+    await this.wander.tick(false);
   }
 
   async fetch(req) {
@@ -236,7 +244,7 @@ export class World extends DurableObject {
         ws.serializeAttachment(me);
         const fresh = Math.max(0, (me.first ?? 0) + NEW_MS - now);
         const n = this.online();
-        ws.send(JSON.stringify({ t: "welcome", id: me.id, h: me.h, n, fresh, ai: this.aiOn() }));
+        ws.send(JSON.stringify({ t: "welcome", id: me.id, h: me.h, n, fresh, ai: this.aiOn(), wa: this.wander.on() }));
         this.all(JSON.stringify({ t: "n", n }));
         break;
       }
@@ -358,6 +366,12 @@ export class World extends DurableObject {
         this.startAi(ws, me, m);
         break;
       }
+      case "wander": {
+        // 不带 op：看它的状态和日记；带 op：管理员操作
+        if (m.op) { if (me.admin) this.wander.admin(m.op, m.g).then(() => ws.send(JSON.stringify(this.wander.log()))); }
+        else ws.send(JSON.stringify(this.wander.log()));
+        break;
+      }
       case "agentkey": {
         issueKey(this, me).then((r) => { try { ws.send(JSON.stringify({ t: "agentkey", ...r })); } catch {} });
         break;
@@ -403,6 +417,8 @@ export class World extends DurableObject {
           if (me.uid && om.uid === me.uid) continue; // 自己的其他标签页
           list.push({ id: om.id, n: om.n, h: om.h, x: om.x, y: om.y, d: om.drew || 0, a: om.drew ? now - om.drew : -1 });
         }
+        const wa = this.wander.whoEntry();
+        if (wa) list.push(wa);
         list.sort((a, b) => b.d - a.d); // 正在画的人排前面
         list.length = Math.min(list.length, 50);
         ws.send(JSON.stringify({ t: "who", list }));
@@ -776,6 +792,7 @@ export class World extends DurableObject {
     this.sql.exec("DELETE FROM ai_log WHERE ts < ?", now - 2 * DAY);
     this.aiBusy.add(me.iph);
     const g = crypto.randomUUID().slice(0, 8);
+    this.sql.exec("INSERT OR REPLACE INTO gtitle (g, t, ts) VALUES (?, ?, ?)", g, q.slice(0, 40), now); // AI 画家路过时能知道这幅画的是什么
     const area = [x, y, x + sz, y + sz];
     const frame = (on) => this.relay(JSON.stringify({ t: "aibox", g, from: me.id, on, x, y, s: sz, n: me.n, h: me.h, q: on ? q : undefined }), area, null, ws);
     frame(true);

@@ -162,6 +162,7 @@ async function draw(world, me, args) {
   world.sql.exec("DELETE FROM agent_log WHERE ts < ?", now - 2 * DAY);
   world.agentBusy.add(me.kh);
   const g = crypto.randomUUID().slice(0, 8);
+  if (title) world.sql.exec("INSERT OR REPLACE INTO gtitle (g, t, ts) VALUES (?, ?, ?)", g, title.slice(0, 40), now);
   const area = [x, y, x + size, y + size];
   const frame = (on) => world.relay(JSON.stringify({ t: "aibox", g, kind: "agent", from: me.id, on, x, y, s: size, n: me.n, h: me.h, q: on ? title : undefined }), area, null, null);
   frame(true);
