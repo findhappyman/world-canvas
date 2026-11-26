@@ -1,7 +1,7 @@
 // 住在画布里的 AI 画家「小游」：每隔一阵子醒来，走到某处看看，想一想，在旁边的空白处画一幅小画。
 // 用 Durable Object 的 alarm 定时唤醒；没人等它，所以模型慢一点也没关系。
 // 每一步都广播给所有人，「···」菜单里可以打开面板看它在想什么、画过什么。
-import { generate, DEFAULT_MODEL } from "./ai.js";
+import { generate, complete } from "./ai.js";
 
 const CHUNK = 2048;
 const DAY = 86_400_000;
@@ -115,7 +115,9 @@ export class Wanderer {
     if (this.running) return;
     this.running = true;
     try {
-      if (force || (this.on() && !this.paused())) await this.walk();
+      // 免费额度用完时等到第二天（UTC 0 点重置）再出门，管理员手动出发不受限
+      const broke = Date.now() < (Number(this.kv("wander_quota")) || 0);
+      if (force || (this.on() && !this.paused() && !broke)) await this.walk();
     } catch (e) {
       console.error("wander failed", e?.stack ?? e);
       this.set({ st: "rest" });
@@ -130,7 +132,7 @@ export class Wanderer {
     if (!env.AI && env.AI_MOCK !== "1") return;
     if (w.banUntil("u:" + UID) > now) return; // 被大家举报了就歇着
     const today = this.sql.exec("SELECT COUNT(*) AS n FROM wander_log WHERE ts > ? AND g IS NOT NULL", now - DAY).one().n;
-    if (today >= (Number(env.WANDER_DAILY) || 40)) return;
+    if (today >= (Number(env.WANDER_DAILY) || 12)) return; // 免费额度每天约够十几幅，和 AI 画笔共用
     this.me.n = this.name();
 
     // 1. 去哪儿：多半去看看别人最近的画，有时随便往外走走
@@ -167,6 +169,13 @@ export class Wanderer {
       this.cursor(box.x + box.s / 2, box.y + box.s / 2);
       n = await this.paint(plan, box, g, focus);
       if (!n) why = "draw";
+    } catch (e) {
+      // 记进日记，管理员在面板里能看到原因
+      console.error("wander failed", e?.stack ?? e);
+      why = "err";
+      const msg = String(e?.message ?? e);
+      plan = { ...(plan || {}), see: clean(msg, 120) };
+      if (/4006|neurons|daily free/i.test(msg)) this.kv("wander_quota", Math.ceil(Date.now() / DAY) * DAY);
     } finally {
       clearInterval(keep);
       this.sql.exec(
@@ -280,14 +289,7 @@ export class Wanderer {
       await sleep(1500);
       text = JSON.stringify({ see: view.total ? `这里有 ${view.total} 笔画` : "一大片空白", thought: "想给这里添一点温暖的东西。", draw: "a small red heart with sun rays", title: "一颗心", side: ["right", "left", "below", "above"][Math.floor(Math.random() * 4)] });
     } else {
-      const res = await Promise.race([
-        env.AI.run(env.AI_MODEL || DEFAULT_MODEL, {
-          messages: [{ role: "system", content: MIND }, { role: "user", content: user }],
-          reasoning: { effort: "low" }, max_tokens: 6000,
-        }),
-        sleep(120_000).then(() => null),
-      ]);
-      text = typeof res?.response === "string" ? res.response : res?.choices?.[0]?.message?.content;
+      text = await complete(env, MIND, user);
     }
     if (typeof text !== "string") return null;
     const m = text.match(/\{[\s\S]*\}/);

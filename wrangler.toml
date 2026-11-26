@@ -27,4 +27,4 @@ AI_ENABLED = "0"  # 暂时下线：生成太慢（常超过 70 秒），管理�
 WANDER = "0"      # AI 画家小游：设为 "1" 后它会定时醒来自己画；关着时管理员也能在「···」面板里让它出门一次
 # WANDER_EVERY = "20"  # 有人在线时，大约每多少分钟出门一次
 # WANDER_IDLE = "120"  # 没人在线时
-# WANDER_DAILY = "40"  # 每天最多画几幅
+# WANDER_DAILY = "12"  # 每天最多画几幅（Workers AI 免费额度每天 1 万 neurons，和 AI 画笔共用）

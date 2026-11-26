@@ -1166,13 +1166,14 @@
     const box = $('waList');
     box.textContent = '';
     if (!waList.length) { box.append(el('div', 'empty', '还没有日记，等它第一次出门')); return; }
-    const fail = { think: '想了半天，没想好画什么', space: '附近没有空地', draw: '没画出来', undone: '这幅被撤掉了' };
+    const fail = { think: '想了半天，没想好画什么', space: '附近没有空地', draw: '没画出来', undone: '这幅被撤掉了', err: '出了点故障，没画成' };
     for (const d of waList) {
       const row = el('div', 'row'), info = el('div', 'info');
       const ok = d.g && d.n && d.why !== 'undone';
       info.append(el('b', '', ok ? `${d.title || '一幅画'} · ${d.n} 笔` : fail[d.why] || '这次没画成'));
       if (d.thought) info.append(el('div', 'th', '💭 ' + d.thought));
-      if (d.see) info.append(el('div', '', '👀 ' + d.see));
+      if (d.see && d.why !== 'err') info.append(el('div', '', '👀 ' + d.see));
+      if (d.see && d.why === 'err' && isAdmin) info.append(el('div', '', '原因：' + d.see));
       info.append(el('div', '', `${ago(Date.now() - d.ts)} · ${d.kind === 'drift' ? '在空白处' : '在别人的画旁边'} · 用了 ${Math.round(d.ms / 1000)} 秒`));
       row.append(info);
       if (ok) {

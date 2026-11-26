@@ -92,6 +92,20 @@ async function* textDeltas(body, end) {
   }
 }
 
+// 普通的一问一答，走和画画同样的流式调用（线上验证过能用），拼成完整文本返回
+export async function complete(env, system, user, maxTokens = 6000) {
+  const end = Date.now() + TOTAL_MS;
+  const body = await within(env.AI.run(env.AI_MODEL || DEFAULT_MODEL, {
+    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    reasoning: { effort: "low" },
+    max_tokens: maxTokens,
+    stream: true,
+  }), FIRST_MS);
+  let out = "";
+  for await (const t of textDeltas(body, end)) out += t;
+  return out;
+}
+
 /**
  * 生成一幅画。每画完一笔就调用 onStroke({c,w,p})。
  * 返回 {n, why}：n 为笔数；why 为 null 或失败原因（skip | busy | fail）。
